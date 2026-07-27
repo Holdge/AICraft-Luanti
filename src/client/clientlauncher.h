@@ -38,6 +38,7 @@ private:
 
 	bool skip_main_menu = false;
 	bool random_input = false;
+	std::string agent_control_socket;
 	RenderingEngine *m_rendering_engine = nullptr;
 	InputHandler *input = nullptr;
 	MyEventReceiver *receiver = nullptr;

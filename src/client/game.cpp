@@ -2032,6 +2032,16 @@ void Game::updateCameraOrientation(CameraOrientation *cam, float dtime)
 		cam->camera_pitch += rate;
 
 	cam->camera_pitch = rangelim(cam->camera_pitch, -90, 90);
+#ifdef AICRAFT_AGENT_CLIENT
+	if (auto *agent_input = dynamic_cast<AgentInputHandler *>(input)) {
+		float yaw;
+		float pitch;
+		if (agent_input->getAgentLook(&yaw, &pitch)) {
+			cam->camera_yaw = yaw;
+			cam->camera_pitch = pitch;
+		}
+	}
+#endif
 }
 
 

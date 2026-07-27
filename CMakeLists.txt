@@ -36,6 +36,7 @@ endif()
 # Configuration options
 set(BUILD_CLIENT TRUE CACHE BOOL "Build client")
 set(BUILD_SERVER FALSE CACHE BOOL "Build server")
+set(BUILD_AGENT_CLIENT FALSE CACHE BOOL "Build the headless AICraft Agent client")
 set(BUILD_UNITTESTS TRUE CACHE BOOL "Build unittests")
 set(BUILD_BENCHMARKS FALSE CACHE BOOL "Build benchmarks")
 set(BUILD_DOCUMENTATION TRUE CACHE BOOL "Build documentation")
@@ -74,10 +75,19 @@ set(RUN_IN_PLACE ${DEFAULT_RUN_IN_PLACE} CACHE BOOL
 message(STATUS "*** Will build version ${VERSION_STRING} ***")
 message(STATUS "BUILD_CLIENT: " ${BUILD_CLIENT})
 message(STATUS "BUILD_SERVER: " ${BUILD_SERVER})
+message(STATUS "BUILD_AGENT_CLIENT: " ${BUILD_AGENT_CLIENT})
 message(STATUS "BUILD_UNITTESTS: " ${BUILD_UNITTESTS})
 message(STATUS "BUILD_BENCHMARKS: " ${BUILD_BENCHMARKS})
 message(STATUS "BUILD_DOCUMENTATION: " ${BUILD_DOCUMENTATION})
 message(STATUS "RUN_IN_PLACE: " ${RUN_IN_PLACE})
+
+if(BUILD_AGENT_CLIENT)
+	if(NOT UNIX)
+		message(FATAL_ERROR "BUILD_AGENT_CLIENT currently requires a Unix domain socket platform")
+	endif()
+	set(BUILD_CLIENT TRUE CACHE BOOL "Build client" FORCE)
+	set(ENABLE_SOUND FALSE CACHE BOOL "Enable sound" FORCE)
+endif()
 
 set(WARN_ALL TRUE CACHE BOOL "Enable -Wall for Release build")
 

@@ -434,6 +434,10 @@ static void set_allowed_options(OptionList *allowed_options)
 			_("Set password from contents of file"))));
 	allowed_options->insert(std::make_pair("go", ValueSpec(VALUETYPE_FLAG,
 			_("Skip main menu, go directly in-game"))));
+#ifdef AICRAFT_AGENT_CLIENT
+	allowed_options->insert(std::make_pair("agent-control-socket", ValueSpec(VALUETYPE_STRING,
+			_("Unix socket used by the AICraft Agent control bridge"))));
+#endif
 	allowed_options->insert(std::make_pair("console", ValueSpec(VALUETYPE_FLAG,
 			_("Start with the console open (Windows only)"))));
 #endif

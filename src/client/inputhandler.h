@@ -13,6 +13,9 @@
 #include "keycode.h"
 #include "settings.h"
 #include "util/string.h"
+#ifdef AICRAFT_AGENT_CLIENT
+#include "agentcontrolbridge.h"
+#endif
 
 class InputHandler;
 
@@ -299,3 +302,37 @@ private:
 	float joystickSpeed;
 	float joystickDirection;
 };
+
+#ifdef AICRAFT_AGENT_CLIENT
+class AgentInputHandler final : public InputHandler
+{
+public:
+	explicit AgentInputHandler(const std::string &socket_path) : bridge(socket_path) {}
+
+	bool isKeyDown(GameKeyType key) override { return bridge.isKeyDown(key); }
+	bool wasKeyDown(GameKeyType key) override { return bridge.wasKeyPressed(key); }
+	bool wasKeyPressed(GameKeyType key) override { return bridge.wasKeyPressed(key); }
+	bool wasKeyReleased(GameKeyType key) override { return bridge.wasKeyReleased(key); }
+	bool cancelPressed() override { return false; }
+	float getJoystickSpeed() override { return bridge.movementSpeed(); }
+	float getJoystickDirection() override { return bridge.movementDirection(); }
+	v2s32 getMousePos() override { return mousepos; }
+	void setMousePos(s32 x, s32 y) override { mousepos = v2s32(x, y); }
+	s32 getMouseWheel() override { return 0; }
+	void step(float) override { bridge.step(); }
+	void clearWasKeyPressed() override { bridge.clearTransitions(); }
+	void clearWasKeyReleased() override { bridge.clearTransitions(); }
+	void clear() override { bridge.clearTransitions(); }
+	void releaseAllKeys() override {}
+	bool getAgentLook(float *yaw, float *pitch) const
+	{
+		*yaw = bridge.yaw();
+		*pitch = bridge.pitch();
+		return true;
+	}
+
+private:
+	AgentControlBridge bridge;
+	v2s32 mousepos;
+};
+#endif

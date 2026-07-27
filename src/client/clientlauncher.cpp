@@ -279,6 +279,16 @@ bool ClientLauncher::run(GameStartData &start_data, const Settings &cmd_args)
 void ClientLauncher::init_args(GameStartData &start_data, const Settings &cmd_args)
 {
 	skip_main_menu = cmd_args.getFlag("go");
+#ifdef AICRAFT_AGENT_CLIENT
+	skip_main_menu = true;
+	if (!cmd_args.exists("address") || !cmd_args.exists("name") ||
+			!cmd_args.exists("agent-control-socket")) {
+		throw BaseException("AICraft Agent client requires --address, --name, and --agent-control-socket");
+	}
+	agent_control_socket = cmd_args.get("agent-control-socket");
+	g_settings->setBool("enable_joysticks", false);
+	g_settings->setBool("enable_touch", false);
+#endif
 
 	start_data.address = g_settings->get("address");
 	if (cmd_args.exists("address")) {
@@ -317,10 +327,14 @@ void ClientLauncher::init_engine()
 
 void ClientLauncher::init_input()
 {
+#ifdef AICRAFT_AGENT_CLIENT
+	input = new AgentInputHandler(agent_control_socket);
+#else
 	if (random_input)
 		input = new RandomInputHandler();
 	else
 		input = new RealInputHandler(receiver);
+#endif
 
 	if (g_settings->getBool("enable_joysticks"))
 		init_joysticks();

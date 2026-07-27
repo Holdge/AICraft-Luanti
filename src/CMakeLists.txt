@@ -705,6 +705,10 @@ if(BUILD_CLIENT)
 		"$<$<PLATFORM_ID:Android>:${SDL2_LIBRARIES}>"
 	)
 	target_compile_definitions(${PROJECT_NAME} PRIVATE "MT_BUILDTARGET=1")
+	if(BUILD_AGENT_CLIENT)
+		target_compile_definitions(${PROJECT_NAME} PRIVATE "AICRAFT_AGENT_CLIENT=1")
+		set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "aicraft-agent-client")
+	endif()
 	if(NOT USE_LUAJIT)
 		set_target_properties(${PROJECT_NAME} PROPERTIES
 			# This is necessary for dynamic Lua modules

@@ -140,7 +140,9 @@ static IrrlichtDevice *createDevice(SIrrlichtCreationParameters params, std::opt
 			return device;
 		errorstream << "Failed to initialize the " << getVideoDriverName(params.DriverType) << " video driver" << std::endl;
 	}
+#ifndef AICRAFT_AGENT_CLIENT
 	sanity_check(requested_driver != video::EDT_NULL);
+#endif
 
 	// try to find any working video driver
 	for (auto fallback_driver: RenderingEngine::getSupportedVideoDrivers()) {
@@ -162,6 +164,12 @@ RenderingEngine::RenderingEngine(MyEventReceiver *receiver)
 	sanity_check(!s_singleton);
 
 	// Resolution selection
+#ifdef AICRAFT_AGENT_CLIENT
+	g_settings->set("video_driver", "null");
+	g_settings->setBool("fullscreen", false);
+	g_settings->setU16("screen_w", 1);
+	g_settings->setU16("screen_h", 1);
+#endif
 	bool fullscreen = g_settings->getBool("fullscreen");
 #ifdef __ANDROID__
 	u16 screen_w = 0, screen_h = 0;
