@@ -437,6 +437,8 @@ static void set_allowed_options(OptionList *allowed_options)
 #ifdef AICRAFT_AGENT_CLIENT
 	allowed_options->insert(std::make_pair("agent-control-socket", ValueSpec(VALUETYPE_STRING,
 			_("Unix socket used by the AICraft Agent control bridge"))));
+	allowed_options->insert(std::make_pair("agent-session", ValueSpec(VALUETYPE_STRING,
+			_("AICraft session identifier assigned to this Agent client"))));
 #endif
 	allowed_options->insert(std::make_pair("console", ValueSpec(VALUETYPE_FLAG,
 			_("Start with the console open (Windows only)"))));

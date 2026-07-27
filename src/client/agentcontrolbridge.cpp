@@ -38,10 +38,13 @@ bool jsonBool(const Json::Value &root, const char *name)
 
 } // namespace
 
-AgentControlBridge::AgentControlBridge(const std::string &socket_path)
+AgentControlBridge::AgentControlBridge(const std::string &socket_path,
+		const std::string &session_id)
 {
 	if (socket_path.empty() || socket_path.size() >= sizeof(sockaddr_un::sun_path))
 		throw BaseException("Invalid AICraft Agent control socket path");
+	if (session_id.empty() || session_id.size() > 128)
+		throw BaseException("Invalid AICraft Agent session identifier");
 
 	m_socket = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (m_socket < 0)
@@ -65,9 +68,13 @@ AgentControlBridge::AgentControlBridge(const std::string &socket_path)
 		throw BaseException("Failed to configure AICraft Agent control socket");
 	}
 
-	const std::string hello = "{\"request_id\":\"engine-hello\",\"type\":\"agent.hello\","
-			"\"protocol\":\"aicraft-control-v1\"}\n";
-	if (send(m_socket, hello.data(), hello.size(), 0) < 0)
+	Json::Value hello(Json::objectValue);
+	hello["request_id"] = "engine-hello";
+	hello["type"] = "agent.hello";
+	hello["protocol"] = "aicraft-control-v1";
+	hello["session_id"] = session_id;
+	const std::string encoded_hello = fastWriteJson(hello) + "\n";
+	if (send(m_socket, encoded_hello.data(), encoded_hello.size(), 0) < 0)
 		throw BaseException("Failed to register AICraft Agent control socket");
 }
 
@@ -126,6 +133,8 @@ void AgentControlBridge::applyLine(const std::string &line)
 	}
 
 	const std::string type = root.get("type", "").asString();
+	if (type == "agent.registered")
+		return;
 	const std::string action_id = root.get("action_id", "").asString();
 	if (action_id.empty()) {
 		warningstream << "Rejected AICraft Agent control without action_id" << std::endl;
@@ -241,4 +250,3 @@ float AgentControlBridge::movementDirection() const
 }
 
 #endif
-

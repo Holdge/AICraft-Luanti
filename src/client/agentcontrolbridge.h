@@ -14,7 +14,7 @@
 class AgentControlBridge
 {
 public:
-	explicit AgentControlBridge(const std::string &socket_path);
+	AgentControlBridge(const std::string &socket_path, const std::string &session_id);
 	~AgentControlBridge();
 
 	AgentControlBridge(const AgentControlBridge &) = delete;
@@ -49,4 +49,3 @@ private:
 };
 
 #endif
-

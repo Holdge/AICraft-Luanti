@@ -648,13 +648,15 @@ if(BUILD_CLIENT)
 
 		target_sources(${PROJECT_NAME} PUBLIC ${client_RESOURCES})
 
-		add_dependencies(${PROJECT_NAME} translations)
+		if(TARGET translations)
+			add_dependencies(${PROJECT_NAME} translations)
+		endif()
 
 		set_target_properties(${PROJECT_NAME} PROPERTIES
 			MACOSX_BUNDLE TRUE
 			MACOSX_BUNDLE_INFO_PLIST "${CMAKE_BINARY_DIR}/Info.plist"
 			RESOURCE "${client_RESOURCES}"
-			XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "org.luanti.luanti"
+			XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${BUNDLE_IDENTIFIER}"
 			XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "YES"
 			XCODE_ATTRIBUTE_INSTALL_PATH "/Applications"
 			XCODE_ATTRIBUTE_SKIP_INSTALL "NO"
@@ -708,6 +710,10 @@ if(BUILD_CLIENT)
 	if(BUILD_AGENT_CLIENT)
 		target_compile_definitions(${PROJECT_NAME} PRIVATE "AICRAFT_AGENT_CLIENT=1")
 		set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "aicraft-agent-client")
+	endif()
+	if(BUILD_AICRAFT_CLIENT)
+		target_compile_definitions(${PROJECT_NAME} PRIVATE "AICRAFT_BRANDED_CLIENT=1")
+		set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "aicraft")
 	endif()
 	if(NOT USE_LUAJIT)
 		set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -1093,7 +1099,15 @@ if(BUILD_CLIENT AND NOT ANDROID)
 		BUNDLE DESTINATION .
 	)
 	if(UNIX)
-		CreateLegacyAlias(minetest_alias "${EXECUTABLE_OUTPUT_PATH}/minetest" ${PROJECT_NAME})
+		if(BUILD_AICRAFT_CLIENT)
+			add_custom_target(minetest_alias ALL
+				COMMAND "${CMAKE_COMMAND}" -E create_symlink "aicraft" "${EXECUTABLE_OUTPUT_PATH}/minetest"
+				WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+			add_dependencies(minetest_alias ${PROJECT_NAME})
+			install(PROGRAMS "${EXECUTABLE_OUTPUT_PATH}/minetest" DESTINATION ${BINDIR})
+		else()
+			CreateLegacyAlias(minetest_alias "${EXECUTABLE_OUTPUT_PATH}/minetest" ${PROJECT_NAME})
+		endif()
 	endif()
 
 	if(APPLE)

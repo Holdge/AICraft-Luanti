@@ -31,11 +31,13 @@ execute_process(
 	"$ENV{SOURCE_ROOT}/fonts"
 	"${RESOURCES_DIR}/fonts"
 )
-execute_process(
-	COMMAND ${CMAKE_COMMAND} -E copy_directory
-	"$ENV{PROJECT_FILE_PATH}/../locale"
-	"${RESOURCES_DIR}/locale"
-)
+if(EXISTS "$ENV{PROJECT_FILE_PATH}/../locale")
+	execute_process(
+		COMMAND ${CMAKE_COMMAND} -E copy_directory
+		"$ENV{PROJECT_FILE_PATH}/../locale"
+		"${RESOURCES_DIR}/locale"
+	)
+endif()
 execute_process(
 	COMMAND ${CMAKE_COMMAND} -E make_directory
 	"${RESOURCES_DIR}/$ENV{PRODUCT_NAME}"

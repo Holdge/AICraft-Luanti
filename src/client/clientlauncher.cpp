@@ -13,6 +13,7 @@
 #include "gettext.h"
 #include "inputhandler.h"
 #include "profiler.h"
+#include "porting.h"
 #include "exceptions.h"
 #include "gui/guiEngine.h"
 #include "fontengine.h"
@@ -279,13 +280,26 @@ bool ClientLauncher::run(GameStartData &start_data, const Settings &cmd_args)
 void ClientLauncher::init_args(GameStartData &start_data, const Settings &cmd_args)
 {
 	skip_main_menu = cmd_args.getFlag("go");
+#ifdef AICRAFT_BRANDED_CLIENT
+	g_settings->set("main_menu_script",
+			porting::path_share + DIR_DELIM + "builtin" + DIR_DELIM +
+			"aicraft" + DIR_DELIM + "init.lua");
+	g_settings->setBool("enable_serverlist", false);
+	g_settings->setBool("enable_update_check", false);
+#ifdef __APPLE__
+	// Apple's OpenGL implementation only exposes the legacy profile reliably.
+	// Avoid six failed OpenGL 3 context attempts before falling back.
+	g_settings->set("video_driver", "opengl");
+#endif
+#endif
 #ifdef AICRAFT_AGENT_CLIENT
 	skip_main_menu = true;
 	if (!cmd_args.exists("address") || !cmd_args.exists("name") ||
-			!cmd_args.exists("agent-control-socket")) {
-		throw BaseException("AICraft Agent client requires --address, --name, and --agent-control-socket");
+			!cmd_args.exists("agent-control-socket") || !cmd_args.exists("agent-session")) {
+		throw BaseException("AICraft Agent client requires --address, --name, --agent-control-socket, and --agent-session");
 	}
 	agent_control_socket = cmd_args.get("agent-control-socket");
+	agent_session = cmd_args.get("agent-session");
 	g_settings->setBool("enable_joysticks", false);
 	g_settings->setBool("enable_touch", false);
 #endif
@@ -328,7 +342,7 @@ void ClientLauncher::init_engine()
 void ClientLauncher::init_input()
 {
 #ifdef AICRAFT_AGENT_CLIENT
-	input = new AgentInputHandler(agent_control_socket);
+	input = new AgentInputHandler(agent_control_socket, agent_session);
 #else
 	if (random_input)
 		input = new RandomInputHandler();

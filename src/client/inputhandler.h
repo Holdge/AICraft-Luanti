@@ -307,7 +307,8 @@ private:
 class AgentInputHandler final : public InputHandler
 {
 public:
-	explicit AgentInputHandler(const std::string &socket_path) : bridge(socket_path) {}
+	AgentInputHandler(const std::string &socket_path, const std::string &session_id) :
+			bridge(socket_path, session_id) {}
 
 	bool isKeyDown(GameKeyType key) override { return bridge.isKeyDown(key); }
 	bool wasKeyDown(GameKeyType key) override { return bridge.wasKeyPressed(key); }
