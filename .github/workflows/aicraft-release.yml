@@ -246,6 +246,14 @@ jobs:
           curl --fail --location --retry 5 --output "/tmp/$archive" "$url"
           echo "${{ matrix.dependency_sha }}  /tmp/$archive" | shasum -a 256 --check
           sudo tar -xzf "/tmp/$archive" -C /Users/Shared
+          mkdir -p /tmp/aicraft-macos-sdk
+          export osver=11.3
+          export xcodever=16.2
+          # Xcode 16 no longer bundles the 11.3 SDK used by Luanti's
+          # reproducible dependency bundle. The upstream helper downloads the
+          # archived SDK and verifies its pinned SHA-256 before installation.
+          source util/ci/macos_sdk.sh
+          install_macos_sdk "$osver" "$xcodever" /tmp/aicraft-macos-sdk
 
       - name: Build and test branded desktop
         shell: bash
