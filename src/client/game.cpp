@@ -1,11 +1,17 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #include "game_internal.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <csignal>
+#include <json/json.h>
+#include <limits>
+#include <sstream>
 #include "client/gameui.h"
 #include "client/inputhandler.h"
 #include "client/texturepaths.h"
@@ -58,6 +64,21 @@
 #endif
 
 typedef s32 SamplerLayer_t;
+
+#ifdef AICRAFT_AGENT_CLIENT
+static AgentInputHandler *getAgentInput(InputHandler *input)
+{
+	auto *agent_input = dynamic_cast<AgentInputHandler *>(input);
+	if (!agent_input)
+		throw BaseException("AICraft Agent build requires AgentInputHandler");
+	return agent_input;
+}
+
+static void setAgentClientState(InputHandler *input, AgentClientState state)
+{
+	getAgentInput(input)->setClientState(state);
+}
+#endif
 
 
 class GameGlobalShaderUniformSetter : public IShaderUniformSetter
@@ -588,12 +609,29 @@ void Game::run()
 
 		step(dtime);
 
+#ifdef AICRAFT_AGENT_CLIENT
+		if (client->serverPlayerActive()) {
+			if (client->getState() != LC_Ready || !client->mediaReceived() ||
+					!client->getEnv().getLocalPlayer()) {
+				throw BaseException(
+						"AICraft Agent server player became active before local readiness");
+			}
+			setAgentClientState(input, AgentClientState::CONTROL_READY);
+		}
+#endif
+
 		processClientEvents(&cam_view_target);
 		updateDebugState();
 		// Update camera here so it is in-sync with CAO position
 		updateCamera(dtime);
 		updateSound(dtime);
+#ifdef AICRAFT_AGENT_CLIENT
+		processAgentActions(dtime);
+#endif
 		processPlayerInteraction(dtime, m_game_ui->m_flags.show_hud);
+#ifdef AICRAFT_AGENT_CLIENT
+		publishAgentObservation(dtime);
+#endif
 		updateFrame(&graph, &stats, dtime, cam_view);
 		updateProfilerGraphs(&graph);
 
@@ -1034,6 +1072,10 @@ bool Game::connectToServer(const GameStartData &start_data,
 	client->m_simple_singleplayer_mode = simple_singleplayer_mode;
 	client->m_internal_server = !!server;
 
+#ifdef AICRAFT_AGENT_CLIENT
+	setAgentClientState(input, AgentClientState::AUTHENTICATING);
+#endif
+
 	/*
 		Wait for server to accept connection
 	*/
@@ -1063,6 +1105,9 @@ bool Game::connectToServer(const GameStartData &start_data,
 
 			// End condition
 			if (client->getState() == LC_Init) {
+#ifdef AICRAFT_AGENT_CLIENT
+				setAgentClientState(input, AgentClientState::MEDIA_SYNC);
+#endif
 				*connect_ok = true;
 				break;
 			}
@@ -1127,6 +1172,14 @@ bool Game::getServerContent(bool *aborted)
 		// End condition
 		if (client->mediaReceived() && client->itemdefReceived() &&
 				client->nodedefReceived()) {
+#ifdef AICRAFT_AGENT_CLIENT
+			if (!client->getEnv().getLocalPlayer()) {
+				*error_message = gettext("Local player was not initialized");
+				errorstream << *error_message << std::endl;
+				return false;
+			}
+			setAgentClientState(input, AgentClientState::PLAYER_READY);
+#endif
 			return true;
 		}
 
@@ -1968,6 +2021,14 @@ void Game::updateCameraDirection(CameraOrientation *cam, float dtime)
 
 		m_first_loop_after_window_activation = true;
 	}
+#ifdef AICRAFT_AGENT_CLIENT
+	// The Null driver has no focused OS window, so its normal mouse branch is
+	// intentionally skipped. Apply the bridge view directly every simulation
+	// tick to keep headless look actions on the standard PlayerControl path.
+	if (auto *agent_input = dynamic_cast<AgentInputHandler *>(input)) {
+		agent_input->getAgentLook(&cam->camera_yaw, &cam->camera_pitch);
+	}
+#endif
 	if (g_touchcontrols)
 		m_first_loop_after_window_activation = true;
 }
@@ -2670,6 +2731,823 @@ void Game::updateSound(f32 dtime)
 	soundmaker->update(dtime, player->makes_footstep_sound,
 			nodedef_manager->get(n).sound_footstep);
 }
+
+#ifdef AICRAFT_AGENT_CLIENT
+namespace {
+
+std::string getAgentNodeName(Client *client, NodeDefManager *ndef,
+		const v3s16 &position, bool *valid = nullptr)
+{
+	bool is_valid = false;
+	const MapNode node = client->getEnv().getClientMap().getNode(position, &is_valid);
+	if (valid)
+		*valid = is_valid;
+	if (!is_valid || node.getContent() == CONTENT_IGNORE)
+		return "";
+	return ndef->get(node).name;
+}
+
+Json::Value agentInventoryList(const InventoryList *list, size_t max_items = 256)
+{
+	Json::Value stacks(Json::arrayValue);
+	if (!list)
+		return stacks;
+	for (u32 slot = 0; slot < list->getSize(); ++slot) {
+		const ItemStack &stack = list->getItem(slot);
+		if (stack.empty())
+			continue;
+		if (stacks.size() >= max_items)
+			break;
+		Json::Value encoded(Json::objectValue);
+		encoded["item"] = stack.name;
+		encoded["count"] = stack.count;
+		encoded["slot"] = slot;
+		if (stack.wear)
+			encoded["wear"] = stack.wear;
+		stacks.append(std::move(encoded));
+	}
+	return stacks;
+}
+
+Json::Value agentInventoryLists(const Inventory *inventory, size_t max_items = 256)
+{
+	Json::Value lists(Json::objectValue);
+	if (!inventory)
+		return lists;
+	size_t emitted = 0;
+	size_t remaining = max_items;
+	for (const InventoryList *list : inventory->getLists()) {
+		if (!list || emitted++ >= 64 || remaining == 0)
+			break;
+		Json::Value encoded = agentInventoryList(list, remaining);
+		remaining -= encoded.size();
+		lists[list->getName()] = std::move(encoded);
+	}
+	return lists;
+}
+
+bool parseAgentObjectId(const std::string &encoded, u16 *id)
+{
+	std::string digits = encoded;
+	const std::string prefix = "object:";
+	if (digits.compare(0, prefix.size(), prefix) == 0)
+		digits.erase(0, prefix.size());
+	if (digits.empty() ||
+			!std::all_of(digits.begin(), digits.end(), [](unsigned char value) {
+				return std::isdigit(value);
+			}))
+		return false;
+	try {
+		const unsigned long parsed = std::stoul(digits);
+		if (parsed == 0 || parsed > std::numeric_limits<u16>::max())
+			return false;
+		*id = static_cast<u16>(parsed);
+		return true;
+	} catch (const std::exception &) {
+		return false;
+	}
+}
+
+} // namespace
+
+std::string Game::agentInventoryFingerprint(const InventoryLocation &location) const
+{
+	Inventory *inventory = client->getInventory(location);
+	if (!inventory)
+		return "";
+	std::ostringstream output(std::ios::binary);
+	inventory->serialize(output);
+	return output.str();
+}
+
+std::string Game::agentCurrentFormName() const
+{
+	std::string form_name;
+	InventoryLocation location;
+	std::vector<AgentFormspecField> fields;
+	return m_game_formspec.getAgentFormspec(&form_name, &location, &fields) ?
+			form_name : "";
+}
+
+bool Game::resolveAgentInventory(const std::string &identifier,
+		InventoryLocation *location, bool *is_container, const char **code)
+{
+	if (identifier == "current_player" || identifier == "player:self") {
+		location->setCurrentPlayer();
+		*is_container = false;
+		return true;
+	}
+
+	try {
+		location->deSerialize(identifier);
+	} catch (const std::exception &) {
+		*code = "INVALID_INVENTORY_ID";
+		return false;
+	}
+
+	LocalPlayer *player = client->getEnv().getLocalPlayer();
+	switch (location->type) {
+	case InventoryLocation::CURRENT_PLAYER:
+		*is_container = false;
+		break;
+	case InventoryLocation::PLAYER:
+		if (location->name != player->getName()) {
+			*code = "INVENTORY_FORBIDDEN";
+			return false;
+		}
+		*is_container = false;
+		break;
+	case InventoryLocation::DETACHED:
+		if (client->detachedInventories().find(location->name) ==
+				client->detachedInventories().end()) {
+			*code = "INVENTORY_NOT_AVAILABLE";
+			return false;
+		}
+		*is_container = true;
+		break;
+	case InventoryLocation::NODEMETA: {
+		std::string form_name;
+		InventoryLocation open_location;
+		std::vector<AgentFormspecField> fields;
+		if (!m_game_formspec.getAgentFormspec(
+					&form_name, &open_location, &fields) ||
+				(open_location != *location &&
+					!m_game_formspec.agentFormspecContainsInventory(*location))) {
+			*code = "CONTAINER_NOT_OPEN";
+			return false;
+		}
+		*is_container = true;
+		break;
+	}
+	case InventoryLocation::UNDEFINED:
+	default:
+		*code = "INVALID_INVENTORY_ID";
+		return false;
+	}
+
+	if (!client->getInventory(*location)) {
+		*code = "INVENTORY_NOT_AVAILABLE";
+		return false;
+	}
+	return true;
+}
+
+bool Game::selectAgentItem(const std::string &item, const char **code)
+{
+	if (item.empty())
+		return true;
+
+	LocalPlayer *player = client->getEnv().getLocalPlayer();
+	InventoryList *main = player->inventory.getList("main");
+	if (!main) {
+		*code = "INVENTORY_NOT_AVAILABLE";
+		return false;
+	}
+
+	const u16 hotbar_size = player->getMaxHotbarItemcount();
+	for (u16 slot = 0; slot < hotbar_size; ++slot) {
+		if (main->getItem(slot).name != item)
+			continue;
+		runData.new_playeritem = slot;
+		if (player->getWieldIndex() != slot)
+			client->setPlayerItem(slot);
+		return true;
+	}
+	*code = "ITEM_NOT_AVAILABLE";
+	return false;
+}
+
+bool Game::resolveAgentTarget(const AgentAction &action,
+		PointedThing *pointed, const char **code)
+{
+	LocalPlayer *player = client->getEnv().getLocalPlayer();
+	ItemStack selected_item;
+	ItemStack hand_item;
+	const ItemStack &tool_item = player->getWieldedItem(&selected_item, &hand_item);
+	const f32 range = getToolRange(tool_item, hand_item, itemdef_manager);
+	const v3f eye = player->getEyePosition() / BS;
+
+	if (action.target_type == AgentTargetType::NODE) {
+		bool valid = false;
+		const MapNode node = client->getEnv().getClientMap().getNode(
+				action.target_position, &valid);
+		if (!valid || node.getContent() == CONTENT_IGNORE) {
+			*code = "TARGET_NOT_LOADED";
+			return false;
+		}
+		const v3f center = v3f::from(action.target_position) + v3f(0.5f);
+		if (eye.getDistanceFrom(center) > range + 2.6f) {
+			*code = "TARGET_OUT_OF_RANGE";
+			return false;
+		}
+
+		v3s16 face;
+		if (action.has_target_face) {
+			face = action.target_face;
+		} else if (runData.pointed_old.type == POINTEDTHING_NODE &&
+				runData.pointed_old.node_undersurface == action.target_position) {
+			face = runData.pointed_old.node_abovesurface -
+					runData.pointed_old.node_undersurface;
+		} else {
+			const v3f delta = eye - center;
+			if (std::abs(delta.Y) >= std::abs(delta.X) &&
+					std::abs(delta.Y) >= std::abs(delta.Z))
+				face.Y = delta.Y >= 0.0f ? 1 : -1;
+			else if (std::abs(delta.X) >= std::abs(delta.Z))
+				face.X = delta.X >= 0.0f ? 1 : -1;
+			else
+				face.Z = delta.Z >= 0.0f ? 1 : -1;
+		}
+
+		pointed->type = POINTEDTHING_NODE;
+		pointed->pointability = nodedef_manager->get(node).pointable;
+		pointed->node_undersurface = action.target_position;
+		pointed->node_real_undersurface = action.target_position;
+		pointed->node_abovesurface = action.target_position + face;
+		pointed->intersection_point = center * BS;
+		pointed->intersection_normal = v3f::from(face);
+		pointed->distanceSq = eye.getDistanceFromSQ(center) * BS * BS;
+		return true;
+	}
+
+	if (action.target_type == AgentTargetType::ENTITY) {
+		u16 object_id;
+		if (!parseAgentObjectId(action.entity_id, &object_id)) {
+			*code = "INVALID_TARGET_ID";
+			return false;
+		}
+		ClientActiveObject *object = client->getEnv().getActiveObject(object_id);
+		if (!object) {
+			*code = "TARGET_NOT_AVAILABLE";
+			return false;
+		}
+		const v3f position = object->getPosition() / BS;
+		if (eye.getDistanceFrom(position) > range + 2.6f) {
+			*code = "TARGET_OUT_OF_RANGE";
+			return false;
+		}
+		pointed->type = POINTEDTHING_OBJECT;
+		pointed->pointability = PointabilityType::POINTABLE;
+		pointed->object_id = object_id;
+		pointed->intersection_point = object->getPosition();
+		pointed->distanceSq = eye.getDistanceFromSQ(position) * BS * BS;
+		return true;
+	}
+
+	*code = "INVALID_TARGET";
+	return false;
+}
+
+bool Game::startAgentAction(AgentActionExecution *execution, const char **code)
+{
+	AgentInputHandler *agent = getAgentInput(input);
+	LocalPlayer *player = client->getEnv().getLocalPlayer();
+	const AgentAction &action = execution->action;
+
+	execution->start_position = player->getPosition();
+	execution->start_wielded_slot = player->getWieldIndex();
+	execution->start_hp = player->hp;
+	execution->start_breath = player->getBreath();
+	execution->inventory_serial = client->inventoryUpdateSerial();
+	execution->player_state_serial = client->playerStateUpdateSerial();
+	execution->chat_serial = client->chatUpdateSerial();
+	execution->formspec_serial = client->formspecUpdateSerial();
+	execution->form_before = agentCurrentFormName();
+	execution->timeout = std::max(1.0f, action.duration_ms / 1000.0f + 3.0f);
+
+	agent->activateAgentActionControls(action);
+
+	switch (action.type) {
+	case AgentActionType::MOVE:
+	case AgentActionType::LOOK:
+	case AgentActionType::WAIT:
+		return true;
+
+	case AgentActionType::EQUIP: {
+		InventoryList *main = player->inventory.getList("main");
+		if (!main || action.slot >= main->getSize() ||
+				action.slot >= player->getMaxHotbarItemcount()) {
+			*code = "SLOT_OUT_OF_RANGE";
+			return false;
+		}
+		runData.new_playeritem = action.slot;
+		client->setPlayerItem(action.slot);
+		return true;
+	}
+
+	case AgentActionType::CHAT:
+		client->typeChatMessage(utf8_to_wide(action.message));
+		return true;
+
+	case AgentActionType::CRAFT: {
+		InventoryLocation current;
+		current.setCurrentPlayer();
+		Inventory *inventory = client->getInventory(current);
+		InventoryList *preview = inventory ? inventory->getList("craftpreview") : nullptr;
+		if (!preview || preview->getSize() == 0 || preview->getItem(0).empty()) {
+			*code = "RECIPE_NOT_PREPARED";
+			return false;
+		}
+		if (preview->getItem(0).name != action.recipe) {
+			*code = "RECIPE_MISMATCH";
+			return false;
+		}
+		execution->inventory_before = agentInventoryFingerprint(current);
+		auto *craft = new ICraftAction();
+		craft->count = action.count;
+		craft->craft_inv = current;
+		client->inventoryAction(craft);
+		execution->interaction_sent = true;
+		return true;
+	}
+
+	case AgentActionType::INVENTORY_MOVE:
+	case AgentActionType::CONTAINER_MOVE: {
+		InventoryLocation from_location;
+		InventoryLocation to_location;
+		bool from_container = false;
+		bool to_container = false;
+		if (!resolveAgentInventory(action.from.inventory, &from_location,
+					&from_container, code) ||
+				!resolveAgentInventory(action.to.inventory, &to_location,
+					&to_container, code))
+			return false;
+		const bool has_container = from_container || to_container;
+		if (action.type == AgentActionType::INVENTORY_MOVE && has_container) {
+			*code = "CONTAINER_ACTION_REQUIRED";
+			return false;
+		}
+		if (action.type == AgentActionType::CONTAINER_MOVE && !has_container) {
+			*code = "CONTAINER_REQUIRED";
+			return false;
+		}
+		if (from_location == to_location && action.from.list == action.to.list &&
+				action.from.slot == action.to.slot) {
+			*code = "SAME_INVENTORY_SLOT";
+			return false;
+		}
+
+		Inventory *from_inventory = client->getInventory(from_location);
+		Inventory *to_inventory = client->getInventory(to_location);
+		InventoryList *from_list = from_inventory ?
+				from_inventory->getList(action.from.list) : nullptr;
+		InventoryList *to_list = to_inventory ?
+				to_inventory->getList(action.to.list) : nullptr;
+		if (!from_list || !to_list) {
+			*code = "INVENTORY_LIST_NOT_FOUND";
+			return false;
+		}
+		if (action.from.slot >= from_list->getSize() ||
+				action.to.slot >= to_list->getSize()) {
+			*code = "SLOT_OUT_OF_RANGE";
+			return false;
+		}
+		const ItemStack &source = from_list->getItem(action.from.slot);
+		if (source.empty() || source.count < action.count) {
+			*code = "INSUFFICIENT_ITEMS";
+			return false;
+		}
+
+		execution->inventory_before = agentInventoryFingerprint(from_location) +
+				"\n--destination--\n" + agentInventoryFingerprint(to_location);
+		auto *move = new IMoveAction();
+		move->count = action.count;
+		move->from_inv = from_location;
+		move->from_list = action.from.list;
+		move->from_i = action.from.slot;
+		move->to_inv = to_location;
+		move->to_list = action.to.list;
+		move->to_i = action.to.slot;
+		client->inventoryAction(move);
+		execution->interaction_sent = true;
+		return true;
+	}
+
+	case AgentActionType::FORMSPEC_SUBMIT: {
+		std::string current_form;
+		InventoryLocation location;
+		std::vector<AgentFormspecField> fields;
+		if (!m_game_formspec.getAgentFormspec(&current_form, &location, &fields)) {
+			*code = "FORMSPEC_NOT_OPEN";
+			return false;
+		}
+		if (current_form != action.form_name) {
+			*code = "FORMSPEC_MISMATCH";
+			return false;
+		}
+		StringMap submitted(action.fields.begin(), action.fields.end());
+		if (location.type == InventoryLocation::NODEMETA)
+			client->sendNodemetaFields(location.p, "", submitted);
+		else
+			client->sendInventoryFields(
+					current_form == "player_inventory" ? "" : current_form,
+					submitted);
+		auto quit = submitted.find("quit");
+		if (quit != submitted.end() &&
+				(quit->second == "true" || quit->second == "1"))
+			m_game_formspec.closeAgentFormspec();
+		execution->interaction_sent = true;
+		return true;
+	}
+
+	case AgentActionType::DIG:
+	case AgentActionType::PLACE:
+	case AgentActionType::USE:
+	case AgentActionType::ATTACK:
+		break;
+	}
+
+	if (!client->checkPrivilege("interact")) {
+		*code = "INTERACT_PRIVILEGE_REQUIRED";
+		return false;
+	}
+	if (!selectAgentItem(action.item, code) ||
+			!resolveAgentTarget(action, &execution->pointed, code))
+		return false;
+	if (action.type == AgentActionType::DIG &&
+			execution->pointed.type != POINTEDTHING_NODE) {
+		*code = "NODE_TARGET_REQUIRED";
+		return false;
+	}
+	if (action.type == AgentActionType::ATTACK &&
+			execution->pointed.type != POINTEDTHING_OBJECT) {
+		*code = "ENTITY_TARGET_REQUIRED";
+		return false;
+	}
+
+	execution->primary_node = execution->pointed.node_undersurface;
+	execution->secondary_node = execution->pointed.node_abovesurface;
+	if (execution->pointed.type == POINTEDTHING_NODE) {
+		execution->primary_node_before = getAgentNodeName(
+				client, nodedef_manager, execution->primary_node);
+		execution->secondary_node_before = getAgentNodeName(
+				client, nodedef_manager, execution->secondary_node);
+		execution->primary_node_serial =
+				client->serverNodeUpdateSerial(execution->primary_node);
+		execution->secondary_node_serial =
+				client->serverNodeUpdateSerial(execution->secondary_node);
+	} else {
+		execution->object_id = execution->pointed.object_id;
+		execution->object_serial =
+				client->serverActiveObjectUpdateSerial(execution->object_id);
+		if (auto *object = client->getEnv().getGenericCAO(execution->object_id)) {
+			execution->had_object = true;
+			execution->object_hp = object->getHP();
+		}
+	}
+	InventoryLocation current_inventory;
+	current_inventory.setCurrentPlayer();
+	execution->inventory_before = agentInventoryFingerprint(current_inventory);
+
+	if (action.type == AgentActionType::DIG) {
+		const MapNode node = client->getEnv().getClientMap().getNode(
+				execution->primary_node);
+		const ContentFeatures &features = nodedef_manager->get(node);
+		ItemStack selected;
+		ItemStack hand;
+		const ItemStack &wielded = player->getWieldedItem(&selected, &hand);
+		const ItemStack &tool = selected.name.empty() ? hand : wielded;
+		DigParams parameters = getDigParams(features.groups,
+				&tool.getToolCapabilities(itemdef_manager, &hand), tool.wear);
+		if (!parameters.diggable)
+			parameters = getDigParams(features.groups,
+					&hand.getToolCapabilities(itemdef_manager));
+		if (!parameters.diggable) {
+			*code = "TARGET_NOT_DIGGABLE";
+			return false;
+		}
+		execution->dig_complete_time = parameters.time;
+		execution->timeout = std::min(30.0f,
+				std::max(3.0f, parameters.time + 5.0f));
+		client->interact(INTERACT_START_DIGGING, execution->pointed);
+		execution->interaction_sent = true;
+		return true;
+	}
+
+	if (action.type == AgentActionType::PLACE) {
+		if (execution->pointed.type == POINTEDTHING_NODE) {
+			ItemStack selected;
+			ItemStack hand;
+			player->getWieldedItem(&selected, &hand);
+			const NodeMetadata *metadata = client->getEnv().getClientMap().
+					getNodeMetadata(execution->primary_node);
+			nodePlacement(selected.getDefinition(itemdef_manager), selected,
+					execution->primary_node, execution->secondary_node,
+					execution->pointed, metadata);
+		} else {
+			client->interact(INTERACT_PLACE, execution->pointed);
+		}
+		execution->interaction_sent = true;
+		return true;
+	}
+
+	if (action.type == AgentActionType::USE) {
+		client->interact(INTERACT_USE, execution->pointed);
+		execution->interaction_sent = true;
+		return true;
+	}
+
+	ClientActiveObject *object = client->getEnv().getActiveObject(execution->object_id);
+	if (!object) {
+		*code = "TARGET_NOT_AVAILABLE";
+		return false;
+	}
+	ItemStack selected;
+	ItemStack hand;
+	const ItemStack &tool = player->getWieldedItem(&selected, &hand);
+	const v3f direction = (object->getPosition() - player->getPosition()).normalize();
+	const bool disable_send = object->directReportPunch(
+			direction, &tool, &hand, runData.time_from_last_punch);
+	runData.time_from_last_punch = 0.0f;
+	if (!disable_send)
+		client->interact(INTERACT_START_DIGGING, execution->pointed);
+	execution->interaction_sent = true;
+	return true;
+}
+
+void Game::finishAgentAction(AgentActionStatus status, const char *code)
+{
+	if (!m_agent_action)
+		return;
+	getAgentInput(input)->reportAgentActionStatus(
+			m_agent_action->action.action_id, status, code);
+	m_agent_action.reset();
+}
+
+void Game::pollAgentAction(f32 dtime)
+{
+	if (!m_agent_action)
+		return;
+	AgentActionExecution &execution = *m_agent_action;
+	const AgentAction &action = execution.action;
+	LocalPlayer *player = client->getEnv().getLocalPlayer();
+	execution.elapsed += dtime;
+
+	switch (action.type) {
+	case AgentActionType::MOVE:
+	case AgentActionType::WAIT:
+		if (execution.elapsed * 1000.0f >= action.duration_ms) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		break;
+
+	case AgentActionType::LOOK:
+		if (std::abs(player->getYaw() - action.yaw) <= 0.5f &&
+				std::abs(player->getPitch() - action.pitch) <= 0.5f) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		break;
+
+	case AgentActionType::EQUIP:
+		if (player->getWieldIndex() == action.slot) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		break;
+
+	case AgentActionType::CHAT:
+		if (client->chatUpdateSerial() > execution.chat_serial) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		break;
+
+	case AgentActionType::CRAFT: {
+		if (client->inventoryUpdateSerial() <= execution.inventory_serial)
+			break;
+		InventoryLocation current;
+		current.setCurrentPlayer();
+		if (agentInventoryFingerprint(current) != execution.inventory_before) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		// Mineclonia can emit unrelated inventory updates while the craft
+		// acknowledgement is still in flight. A serial change without a
+		// fingerprint change is not a rejection; keep waiting for the bounded
+		// confirmation timeout.
+		break;
+	}
+
+	case AgentActionType::INVENTORY_MOVE:
+	case AgentActionType::CONTAINER_MOVE: {
+		if (client->inventoryUpdateSerial() <= execution.inventory_serial)
+			break;
+		InventoryLocation from_location;
+		InventoryLocation to_location;
+		bool unused;
+		const char *unused_code = nullptr;
+		if (!resolveAgentInventory(action.from.inventory, &from_location,
+					&unused, &unused_code) ||
+				!resolveAgentInventory(action.to.inventory, &to_location,
+					&unused, &unused_code)) {
+			finishAgentAction(AgentActionStatus::REJECTED, "INVENTORY_CLOSED");
+			return;
+		}
+		const std::string current = agentInventoryFingerprint(from_location) +
+				"\n--destination--\n" + agentInventoryFingerprint(to_location);
+		if (current != execution.inventory_before) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		// Source and destination inventories may arrive in separate updates,
+		// and other mods can update an inventory concurrently. Only a changed
+		// fingerprint confirms the action; an unchanged intermediate update
+		// must not be reported as a server rejection.
+		break;
+	}
+
+	case AgentActionType::FORMSPEC_SUBMIT:
+		if (client->formspecUpdateSerial() > execution.formspec_serial ||
+				client->inventoryUpdateSerial() > execution.inventory_serial ||
+				agentCurrentFormName() != execution.form_before) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		break;
+
+	case AgentActionType::DIG: {
+		if (!execution.dig_completed &&
+				execution.elapsed >= execution.dig_complete_time) {
+			client->interact(INTERACT_DIGGING_COMPLETED, execution.pointed);
+			execution.dig_completed = true;
+		}
+		const u64 serial = client->serverNodeUpdateSerial(execution.primary_node);
+		if (serial > execution.primary_node_serial) {
+			const std::string current = getAgentNodeName(
+					client, nodedef_manager, execution.primary_node);
+			if (current != execution.primary_node_before) {
+				finishAgentAction(AgentActionStatus::SUCCEEDED);
+				return;
+			}
+			if (execution.dig_completed) {
+				finishAgentAction(AgentActionStatus::REJECTED, "SERVER_REJECTED");
+				return;
+			}
+		}
+		break;
+	}
+
+	case AgentActionType::PLACE: {
+		const bool is_node = execution.pointed.type == POINTEDTHING_NODE;
+		const bool primary_updated = is_node &&
+				client->serverNodeUpdateSerial(execution.primary_node) >
+				execution.primary_node_serial;
+		const bool secondary_updated = is_node &&
+				client->serverNodeUpdateSerial(execution.secondary_node) >
+				execution.secondary_node_serial;
+		const bool primary_changed = primary_updated &&
+				getAgentNodeName(client, nodedef_manager, execution.primary_node) !=
+				execution.primary_node_before;
+		const bool secondary_changed = secondary_updated &&
+				getAgentNodeName(client, nodedef_manager, execution.secondary_node) !=
+				execution.secondary_node_before;
+		const bool object_updated = !is_node &&
+				client->serverActiveObjectUpdateSerial(execution.object_id) >
+				execution.object_serial;
+		InventoryLocation current_inventory;
+		current_inventory.setCurrentPlayer();
+		const bool inventory_changed =
+				client->inventoryUpdateSerial() > execution.inventory_serial &&
+				agentInventoryFingerprint(current_inventory) !=
+						execution.inventory_before;
+		if (primary_changed || secondary_changed || object_updated ||
+				inventory_changed ||
+				client->formspecUpdateSerial() > execution.formspec_serial ||
+				agentCurrentFormName() != execution.form_before) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		break;
+	}
+
+	case AgentActionType::USE: {
+		const bool node_updated = execution.pointed.type == POINTEDTHING_NODE &&
+				client->serverNodeUpdateSerial(execution.primary_node) >
+				execution.primary_node_serial;
+		const bool object_updated = execution.pointed.type == POINTEDTHING_OBJECT &&
+				client->serverActiveObjectUpdateSerial(execution.object_id) >
+				execution.object_serial;
+		InventoryLocation current_inventory;
+		current_inventory.setCurrentPlayer();
+		const bool inventory_changed =
+				client->inventoryUpdateSerial() > execution.inventory_serial &&
+				agentInventoryFingerprint(current_inventory) !=
+						execution.inventory_before;
+		if (node_updated || object_updated ||
+				inventory_changed ||
+				client->playerStateUpdateSerial() > execution.player_state_serial ||
+				client->formspecUpdateSerial() > execution.formspec_serial ||
+				agentCurrentFormName() != execution.form_before) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		break;
+	}
+
+	case AgentActionType::ATTACK: {
+		GenericCAO *object = client->getEnv().getGenericCAO(execution.object_id);
+		if (!client->getEnv().getActiveObject(execution.object_id) ||
+				(execution.had_object && object &&
+						object->getHP() != execution.object_hp)) {
+			finishAgentAction(AgentActionStatus::SUCCEEDED);
+			return;
+		}
+		break;
+	}
+	}
+
+	if (execution.elapsed >= execution.timeout)
+		finishAgentAction(AgentActionStatus::EXPIRED,
+				"ACTION_CONFIRMATION_TIMEOUT");
+}
+
+void Game::processAgentActions(f32 dtime)
+{
+	AgentInputHandler *agent = getAgentInput(input);
+	if (!m_agent_action) {
+		AgentAction action;
+		if (agent->takeAgentAction(&action)) {
+			m_agent_action.emplace();
+			m_agent_action->action = std::move(action);
+			const char *code = nullptr;
+			if (!startAgentAction(&*m_agent_action, &code)) {
+				agent->reportAgentActionStatus(
+						m_agent_action->action.action_id,
+						AgentActionStatus::REJECTED,
+						code ? code : "ACTION_REJECTED");
+				m_agent_action.reset();
+			} else {
+				agent->reportAgentActionStatus(
+						m_agent_action->action.action_id,
+						AgentActionStatus::EXECUTING);
+			}
+		}
+		return;
+	}
+	pollAgentAction(dtime);
+}
+
+void Game::publishAgentObservation(f32 dtime)
+{
+	AgentInputHandler *agent = getAgentInput(input);
+	if (!agent->agentObservationStreamEnabled())
+		return;
+	m_agent_observation_timer += dtime;
+	if (m_agent_observation_timer < 0.2f)
+		return;
+	m_agent_observation_timer = 0.0f;
+
+	LocalPlayer *player = client->getEnv().getLocalPlayer();
+	Json::Value observation(Json::objectValue);
+	observation["version"] = "v1";
+	observation["source"] = "aicraft-luanti-client";
+	observation["player_name"] = player->getName();
+
+	Json::Value interaction(Json::objectValue);
+	std::string form_name;
+	InventoryLocation form_location;
+	std::vector<AgentFormspecField> form_fields;
+	if (m_game_formspec.getAgentFormspec(
+				&form_name, &form_location, &form_fields)) {
+		interaction["formspec"]["form_name"] = form_name;
+		interaction["formspec"]["fields"] = Json::arrayValue;
+		for (const AgentFormspecField &field : form_fields) {
+			if (interaction["formspec"]["fields"].size() >= 32)
+				break;
+			Json::Value encoded(Json::objectValue);
+			encoded["name"] = field.name;
+			encoded["type"] = field.type;
+			if (!field.label.empty())
+				encoded["label"] = field.label.substr(0, 128);
+			if (!field.value.empty())
+				encoded["value"] = field.value.substr(0, 512);
+			interaction["formspec"]["fields"].append(std::move(encoded));
+		}
+		InventoryLocation container_location = form_location;
+		if ((container_location.type == InventoryLocation::NODEMETA ||
+					container_location.type == InventoryLocation::DETACHED) ||
+				m_game_formspec.getAgentContainerLocation(
+						&container_location)) {
+			interaction["container"]["id"] = container_location.dump();
+			interaction["container"]["lists"] =
+					agentInventoryLists(client->getInventory(
+							container_location));
+		}
+	}
+	observation["interaction"] = std::move(interaction);
+	observation["serials"]["inventory"] = Json::UInt64(
+			client->inventoryUpdateSerial());
+	observation["serials"]["player_state"] = Json::UInt64(
+			client->playerStateUpdateSerial());
+	observation["serials"]["chat"] = Json::UInt64(client->chatUpdateSerial());
+	observation["serials"]["formspec"] = Json::UInt64(
+			client->formspecUpdateSerial());
+
+	agent->publishAgentObservation(observation);
+}
+#endif
 
 
 void Game::processPlayerInteraction(f32 dtime, bool show_hud)
@@ -3830,6 +4708,14 @@ void the_game(volatile std::sig_atomic_t *kill,
 	} catch (ShaderException &e) {
 		error_message = e.what();
 		errorstream << error_message << std::endl;
+#ifdef AICRAFT_AGENT_CLIENT
+	} catch (BaseException &e) {
+		// A control-channel disconnect is fatal for an unattended Agent, but it
+		// should still unwind the game and return a non-zero process result
+		// instead of terminating through libc++.
+		error_message = std::string("AICraft Agent control failure: ") + e.what();
+		errorstream << error_message << std::endl;
+#endif
 	}
 
 	game.shutdown();

@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #pragma once
 
@@ -330,6 +331,30 @@ public:
 	{ return !m_media_downloader; }
 	bool activeObjectsReceived() const
 	{ return m_activeobjects_received; }
+	bool serverPlayerActive() const
+	{ return m_server_player_active; }
+	u64 inventoryUpdateSerial() const
+	{ return m_inventory_update_serial; }
+	u64 playerStateUpdateSerial() const
+	{ return m_player_state_update_serial; }
+	u64 chatUpdateSerial() const
+	{ return m_chat_update_serial; }
+	u64 formspecUpdateSerial() const
+	{ return m_formspec_update_serial; }
+	const std::wstring &lastChatMessage() const
+	{ return m_last_chat_message; }
+	u64 serverNodeUpdateSerial(const v3s16 &position) const
+	{
+		auto found = m_server_node_update_serials.find(position);
+		return found == m_server_node_update_serials.end() ? 0 : found->second;
+	}
+	u64 serverActiveObjectUpdateSerial(u16 id) const
+	{
+		auto found = m_server_active_object_update_serials.find(id);
+		return found == m_server_active_object_update_serials.end() ? 0 : found->second;
+	}
+	const std::unordered_map<std::string, Inventory *> &detachedInventories() const
+	{ return m_detached_inventories; }
 
 	u16 getProtoVersion() const
 	{ return m_proto_ver; }
@@ -551,7 +576,16 @@ private:
 	bool m_itemdef_received = false;
 	bool m_nodedef_received = false;
 	bool m_activeobjects_received = false;
+	bool m_server_player_active = false;
 	bool m_mods_loaded = false;
+	u64 m_inventory_update_serial = 0;
+	u64 m_player_state_update_serial = 0;
+	u64 m_chat_update_serial = 0;
+	u64 m_formspec_update_serial = 0;
+	u64 m_server_world_update_serial = 0;
+	std::wstring m_last_chat_message;
+	std::map<v3s16, u64> m_server_node_update_serials;
+	std::map<u16, u64> m_server_active_object_update_serials;
 
 	std::vector<std::string> m_remote_media_servers;
 	// Media downloader, only exists during init

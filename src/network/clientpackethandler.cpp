@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2015 nerzhul, Loic Blot <loic.blot@unix-experience.fr>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #include "client/client.h"
 
@@ -247,6 +248,7 @@ void Client::handleCommand_RemoveNode(NetworkPacket* pkt)
 	v3s16 p;
 	*pkt >> p;
 	removeNode(p);
+	m_server_node_update_serials[p] = ++m_server_world_update_serial;
 }
 
 void Client::handleCommand_AddNode(NetworkPacket* pkt)
@@ -264,6 +266,7 @@ void Client::handleCommand_AddNode(NetworkPacket* pkt)
 	*pkt >> keep_metadata;
 
 	addNode(p, n, !keep_metadata);
+	m_server_node_update_serials[p] = ++m_server_world_update_serial;
 }
 
 void Client::handleCommand_NodemetaChanged(NetworkPacket *pkt)
@@ -284,8 +287,11 @@ void Client::handleCommand_NodemetaChanged(NetworkPacket *pkt)
 		v3s16 pos = i->first;
 
 		if (map.isValidPosition(pos) &&
-				map.setNodeMetadata(pos, i->second))
+				map.setNodeMetadata(pos, i->second)) {
+			m_server_node_update_serials[pos] = ++m_server_world_update_serial;
+			++m_inventory_update_serial;
 			continue; // Prevent from deleting metadata
+		}
 
 		// Meta couldn't be set, unused metadata
 		delete i->second;
@@ -361,6 +367,7 @@ void Client::handleCommand_Inventory(NetworkPacket* pkt)
 	player->inventory.deSerialize(is);
 
 	m_update_wielded_item = true;
+	++m_inventory_update_serial;
 
 	m_inventory_from_server = std::make_unique<Inventory>(player->inventory);
 	m_inventory_from_server_age = 0.0f;
@@ -408,6 +415,8 @@ void Client::handleCommand_ChatMessage(NetworkPacket *pkt)
 	chatMessage->timestamp = static_cast<std::time_t>(timestamp);
 
 	chatMessage->type = (ChatMessageType) message_type;
+	m_last_chat_message = chatMessage->message;
+	++m_chat_update_serial;
 
 	// log the chat message
 	actionstream << "CHAT: " << wide_to_utf8(unescape_enriched(chatMessage->message)) << std::endl;
@@ -448,6 +457,7 @@ void Client::handleCommand_ActiveObjectRemoveAdd(NetworkPacket* pkt)
 		for (u16 i = 0; i < removed_count; i++) {
 			*pkt >> id;
 			m_env.removeActiveObject(id);
+			m_server_active_object_update_serials[id] = ++m_server_world_update_serial;
 			// Object-attached sounds MUST NOT be removed here because they might
 			// have started to play immediately before the entity was removed.
 		}
@@ -458,6 +468,7 @@ void Client::handleCommand_ActiveObjectRemoveAdd(NetworkPacket* pkt)
 		for (u16 i = 0; i < added_count; i++) {
 			*pkt >> id >> type;
 			m_env.addActiveObject(id, type, pkt->readLongString());
+			m_server_active_object_update_serials[id] = ++m_server_world_update_serial;
 		}
 	} while (0);
 
@@ -485,6 +496,7 @@ void Client::handleCommand_ActiveObjectMessages(NetworkPacket* pkt)
 
 		// Pass on to the environment
 		m_env.processActiveObjectMessage(id, message);
+		m_server_active_object_update_serials[id] = ++m_server_world_update_serial;
 	}
 }
 
@@ -547,6 +559,7 @@ void Client::handleCommand_HP(NetworkPacket *pkt)
 	}
 
 	player->hp = hp;
+	++m_player_state_update_serial;
 
 	if (modsLoaded())
 		m_script->on_hp_modification(hp);
@@ -571,6 +584,7 @@ void Client::handleCommand_Breath(NetworkPacket* pkt)
 	*pkt >> breath;
 
 	player->setBreath(breath);
+	++m_player_state_update_serial;
 }
 
 void Client::handleCommand_MovePlayer(NetworkPacket* pkt)
@@ -584,6 +598,7 @@ void Client::handleCommand_MovePlayer(NetworkPacket* pkt)
 	*pkt >> pos >> pitch >> yaw;
 
 	player->setPosition(pos);
+	++m_player_state_update_serial;
 
 	infostream << "Client got TOCLIENT_MOVE_PLAYER"
 			<< " pos=" << pos
@@ -613,6 +628,7 @@ void Client::handleCommand_MovePlayerRel(NetworkPacket *pkt)
 	LocalPlayer *player = m_env.getLocalPlayer();
 	assert(player);
 	player->addPosition(added_pos);
+	++m_player_state_update_serial;
 }
 
 void Client::handleCommand_DeathScreenLegacy(NetworkPacket* pkt)
@@ -927,6 +943,7 @@ void Client::handleCommand_InventoryFormSpec(NetworkPacket* pkt)
 	// Store formspec in LocalPlayer
 	player->inventory_formspec = pkt->readLongString();
 	player->inventory_formspec_override.clear();
+	++m_formspec_update_serial;
 }
 
 void Client::handleCommand_DetachedInventory(NetworkPacket* pkt)
@@ -944,6 +961,7 @@ void Client::handleCommand_DetachedInventory(NetworkPacket* pkt)
 			delete inv_it->second;
 			m_detached_inventories.erase(inv_it);
 		}
+		++m_inventory_update_serial;
 		return;
 	}
 	Inventory *inv = nullptr;
@@ -960,6 +978,7 @@ void Client::handleCommand_DetachedInventory(NetworkPacket* pkt)
 	std::string contents(pkt->getRemainingString(), pkt->getRemainingBytes());
 	std::istringstream is(contents, std::ios::binary);
 	inv->deSerialize(is);
+	++m_inventory_update_serial;
 }
 
 void Client::handleCommand_ShowFormSpec(NetworkPacket* pkt)
@@ -968,6 +987,7 @@ void Client::handleCommand_ShowFormSpec(NetworkPacket* pkt)
 	std::string formname;
 
 	*pkt >> formname;
+	++m_formspec_update_serial;
 
 	ClientEvent *event = new ClientEvent();
 	event->type = CE_SHOW_FORMSPEC;
@@ -1631,6 +1651,13 @@ void Client::handleCommand_UpdatePlayerList(NetworkPacket* pkt)
 			continue;
 		}
 	}
+
+	// The server sends PLAYER_LIST_INIT specifically to this peer only after
+	// StageTwoClientInit has created its RemotePlayer/PlayerSAO and transitioned
+	// the connection to CS_Active.  The packet itself is therefore the
+	// authoritative post-join acknowledgement, even if the list is empty.
+	if (notice_type == PLAYER_LIST_INIT)
+		m_server_player_active = true;
 }
 
 void Client::handleCommand_SrpBytesSandB(NetworkPacket* pkt)

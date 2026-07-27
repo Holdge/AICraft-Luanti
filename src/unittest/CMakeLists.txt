@@ -1,3 +1,4 @@
+# Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 file(GLOB unittest_HDRS "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
 
 set(unittest_SRCS
@@ -56,5 +57,12 @@ set(unittest_client_SRCS
 	${CMAKE_CURRENT_SOURCE_DIR}/test_eventmanager.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/test_gameui.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/test_keycode.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/test_mesh_compare.cpp
-	PARENT_SCOPE)
+	${CMAKE_CURRENT_SOURCE_DIR}/test_mesh_compare.cpp)
+
+if(BUILD_AGENT_CLIENT)
+	list(APPEND unittest_client_SRCS
+		${CMAKE_CURRENT_SOURCE_DIR}/test_agentcontrolbridge.cpp
+		${CMAKE_CURRENT_SOURCE_DIR}/test_securecredential.cpp)
+endif()
+
+set(unittest_client_SRCS ${unittest_client_SRCS} PARENT_SCOPE)

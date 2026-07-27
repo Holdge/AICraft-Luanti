@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #pragma once
 
@@ -22,6 +23,9 @@
 #include "log_internal.h"
 #include "sky.h"
 #include "util/pointedthing.h"
+#ifdef AICRAFT_AGENT_CLIENT
+#include "client/agentcontrolbridge.h"
+#endif
 
 /* DO NOT INCLUDE THIS FROM OUTSIDE GAME.CPP */
 
@@ -77,6 +81,39 @@ struct GameRunData {
 
 	float time_of_day_smooth;
 };
+
+#ifdef AICRAFT_AGENT_CLIENT
+struct AgentActionExecution
+{
+	AgentAction action;
+	PointedThing pointed;
+	v3s16 primary_node;
+	v3s16 secondary_node;
+	v3f start_position;
+	std::string primary_node_before;
+	std::string secondary_node_before;
+	std::string inventory_before;
+	std::string form_before;
+	u64 primary_node_serial = 0;
+	u64 secondary_node_serial = 0;
+	u64 object_serial = 0;
+	u64 inventory_serial = 0;
+	u64 player_state_serial = 0;
+	u64 chat_serial = 0;
+	u64 formspec_serial = 0;
+	u16 object_id = 0;
+	u16 object_hp = 0;
+	u16 start_wielded_slot = 0;
+	u16 start_hp = 0;
+	u16 start_breath = 0;
+	f32 elapsed = 0.0f;
+	f32 timeout = 5.0f;
+	f32 dig_complete_time = 0.0f;
+	bool interaction_sent = false;
+	bool dig_completed = false;
+	bool had_object = false;
+};
+#endif
 
 struct ClientEventHandler
 {
@@ -179,6 +216,20 @@ protected:
 	void updateCamera(f32 dtime);
 	void updateSound(f32 dtime);
 	void processPlayerInteraction(f32 dtime, bool show_hud);
+#ifdef AICRAFT_AGENT_CLIENT
+	void processAgentActions(f32 dtime);
+	void publishAgentObservation(f32 dtime);
+	bool startAgentAction(AgentActionExecution *execution, const char **code);
+	void pollAgentAction(f32 dtime);
+	void finishAgentAction(AgentActionStatus status, const char *code = nullptr);
+	bool resolveAgentTarget(const AgentAction &action, PointedThing *pointed,
+			const char **code);
+	bool selectAgentItem(const std::string &item, const char **code);
+	bool resolveAgentInventory(const std::string &identifier,
+			InventoryLocation *location, bool *is_container, const char **code);
+	std::string agentInventoryFingerprint(const InventoryLocation &location) const;
+	std::string agentCurrentFormName() const;
+#endif
 	/*!
 	 * Returns the object or node the player is pointing at.
 	 * Also updates the selected thing in the Hud.
@@ -327,6 +378,10 @@ private:
 
 	GameRunData runData;
 	Flags m_flags;
+#ifdef AICRAFT_AGENT_CLIENT
+	std::optional<AgentActionExecution> m_agent_action;
+	f32 m_agent_observation_timer = 0.0f;
+#endif
 
 	/* 'cache'
 	   This class does take ownership/responsibily for cleaning up etc of any of

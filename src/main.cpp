@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #include <map>
 #include "irrlichttypes_bloated.h"
@@ -431,7 +432,7 @@ static void set_allowed_options(OptionList *allowed_options)
 	allowed_options->insert(std::make_pair("password", ValueSpec(VALUETYPE_STRING,
 			_("Set password"))));
 	allowed_options->insert(std::make_pair("password-file", ValueSpec(VALUETYPE_STRING,
-			_("Set password from contents of file"))));
+			_("Set password from a current-user-owned 0600 file"))));
 	allowed_options->insert(std::make_pair("go", ValueSpec(VALUETYPE_FLAG,
 			_("Skip main menu, go directly in-game"))));
 #ifdef AICRAFT_AGENT_CLIENT
@@ -439,6 +440,8 @@ static void set_allowed_options(OptionList *allowed_options)
 			_("Unix socket used by the AICraft Agent control bridge"))));
 	allowed_options->insert(std::make_pair("agent-session", ValueSpec(VALUETYPE_STRING,
 			_("AICraft session identifier assigned to this Agent client"))));
+	allowed_options->insert(std::make_pair("agent-session-secret-file", ValueSpec(VALUETYPE_STRING,
+			_("AICraft session secret from a current-user-owned 0600 file"))));
 #endif
 	allowed_options->insert(std::make_pair("console", ValueSpec(VALUETYPE_FLAG,
 			_("Start with the console open (Windows only)"))));

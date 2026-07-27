@@ -1,3 +1,4 @@
+# Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 set(sound_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/sound.cpp)
 
 if(USE_SOUND)
@@ -70,6 +71,7 @@ set(client_SRCS
 	${CMAKE_CURRENT_SOURCE_DIR}/node_visuals.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/particles.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/renderingengine.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/securecredential.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/shader.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/sky.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/sound_maker.cpp

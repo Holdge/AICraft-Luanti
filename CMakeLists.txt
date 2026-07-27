@@ -1,3 +1,4 @@
+# Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 cmake_minimum_required(VERSION 3.12)
 if(POLICY CMP0177)
     cmake_policy(SET CMP0177 NEW)

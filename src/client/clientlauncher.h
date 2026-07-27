@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #pragma once
 
@@ -40,6 +41,7 @@ private:
 	bool random_input = false;
 	std::string agent_control_socket;
 	std::string agent_session;
+	std::string agent_session_secret;
 	RenderingEngine *m_rendering_engine = nullptr;
 	InputHandler *input = nullptr;
 	MyEventReceiver *receiver = nullptr;

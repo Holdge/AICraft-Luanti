@@ -1,3 +1,4 @@
+# Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 project(luanti)
 
 INCLUDE(CheckTypeSize)

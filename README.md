@@ -9,6 +9,13 @@
 
 Luanti is a free open-source voxel game engine with easy modding and game creation.
 
+This branch is the AICraft-Luanti fork. It is based on the exact Luanti
+5.16.1 source commit `5ebd9b57984d5854e0a37fd0125da48e9e59e190` and adds
+feature-gated AICraft headless Agent and branded desktop targets. See
+[AICRAFT_CHANGES.md](AICRAFT_CHANGES.md) for the modification, release,
+corresponding-source, and signing notices. The fork remains
+LGPL-2.1-or-later.
+
 Copyright (C) 2010-2026 Perttu Ahola <celeron55@gmail.com>
 and contributors (see source file comments and the version control log)
 

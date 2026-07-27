@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #pragma once
 
@@ -307,8 +308,9 @@ private:
 class AgentInputHandler final : public InputHandler
 {
 public:
-	AgentInputHandler(const std::string &socket_path, const std::string &session_id) :
-			bridge(socket_path, session_id) {}
+	AgentInputHandler(const std::string &socket_path, const std::string &session_id,
+			const std::string &session_secret) :
+			bridge(socket_path, session_id, session_secret) {}
 
 	bool isKeyDown(GameKeyType key) override { return bridge.isKeyDown(key); }
 	bool wasKeyDown(GameKeyType key) override { return bridge.wasKeyPressed(key); }
@@ -330,6 +332,26 @@ public:
 		*yaw = bridge.yaw();
 		*pitch = bridge.pitch();
 		return true;
+	}
+	void setClientState(AgentClientState state) { bridge.setClientState(state); }
+	bool isRegistered() const { return bridge.isRegistered(); }
+	bool takeAgentAction(AgentAction *action) { return bridge.takeAction(action); }
+	void activateAgentActionControls(const AgentAction &action)
+	{
+		bridge.activateActionControls(action);
+	}
+	void reportAgentActionStatus(const std::string &action_id,
+			AgentActionStatus status, const char *code = nullptr)
+	{
+		bridge.reportActionStatus(action_id, status, code);
+	}
+	void publishAgentObservation(const Json::Value &observation)
+	{
+		bridge.publishObservation(observation);
+	}
+	bool agentObservationStreamEnabled() const
+	{
+		return bridge.observationStreamEnabled();
 	}
 
 private:

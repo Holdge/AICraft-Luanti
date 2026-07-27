@@ -1,0 +1,568 @@
+name: AICraft release
+# Added for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "aicraft-v*"
+
+concurrency:
+  group: aicraft-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_LUANTI_COMMIT: 5ebd9b57984d5854e0a37fd0125da48e9e59e190
+  INSTALL_PREFIX: /opt/aicraft/engine
+
+jobs:
+  source:
+    name: Verify and archive source
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      epoch: ${{ steps.source.outputs.epoch }}
+      short_commit: ${{ steps.source.outputs.short_commit }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify AICraft source lineage
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          epoch="$(git show -s --format=%ct HEAD)"
+          short_commit="${commit:0:12}"
+          version="$(sed -n 's/^set(VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' CMakeLists.txt).$(sed -n 's/^set(VERSION_MINOR \([0-9][0-9]*\)).*/\1/p' CMakeLists.txt).$(sed -n 's/^set(VERSION_PATCH \([0-9][0-9]*\)).*/\1/p' CMakeLists.txt)"
+          test "$(git status --porcelain=v1 | wc -l)" -eq 0
+          git cat-file -e "${UPSTREAM_LUANTI_COMMIT}^{commit}"
+          git merge-base --is-ancestor "$UPSTREAM_LUANTI_COMMIT" "$commit"
+          test -s AICRAFT_CHANGES.md
+          test -s LICENSE.txt
+          test -s doc/lgpl-2.1.txt
+          {
+            echo "commit=$commit"
+            echo "epoch=$epoch"
+            echo "short_commit=$short_commit"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create corresponding-source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="AICraft-Luanti-${{ steps.source.outputs.version }}-${{ steps.source.outputs.short_commit }}-source"
+          mkdir -p artifact
+          git archive --format=tar --prefix="$name/" "${{ steps.source.outputs.commit }}" |
+            gzip -n -9 > "artifact/$name.tar.gz"
+          (
+            cd artifact
+            sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          )
+
+      - name: Upload corresponding source
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aicraft-luanti-source-${{ steps.source.outputs.short_commit }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+  linux:
+    name: Linux server and headless Agent
+    needs: source
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./util/ci/common.sh
+          install_linux_deps ninja-build
+
+      - name: Build and test server and Agent targets
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
+          SHORT_COMMIT: ${{ needs.source.outputs.short_commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          version_extra="aicraft.${SHORT_COMMIT}"
+          common_flags=(
+            -G Ninja
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX"
+            -DVERSION_EXTRA="$version_extra"
+            -DBUILD_BENCHMARKS=OFF
+            -DBUILD_DOCUMENTATION=OFF
+            -DENABLE_LTO=OFF
+            -DRUN_IN_PLACE=OFF
+          )
+
+          cmake -S . -B build-release-server "${common_flags[@]}" \
+            -DBUILD_CLIENT=OFF \
+            -DBUILD_SERVER=ON \
+            -DBUILD_UNITTESTS=ON
+          cmake --build build-release-server --parallel 3
+          bin/luantiserver --run-unittests
+
+          cmake -S . -B build-release-agent "${common_flags[@]}" \
+            -DBUILD_AGENT_CLIENT=ON \
+            -DBUILD_SERVER=OFF \
+            -DBUILD_UNITTESTS=ON \
+            -DENABLE_SOUND=OFF
+          cmake --build build-release-agent --parallel 3
+          bin/aicraft-agent-client --run-unittests
+
+          # Re-link the distributed binaries without the embedded test harness.
+          cmake -S . -B build-release-server -DBUILD_UNITTESTS=OFF
+          cmake --build build-release-server --parallel 3
+          cmake -S . -B build-release-agent -DBUILD_UNITTESTS=OFF
+          cmake --build build-release-agent --parallel 3
+
+      - name: Stage root filesystem and release metadata
+        id: stage
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
+          SOURCE_EPOCH: ${{ needs.source.outputs.epoch }}
+          SHORT_COMMIT: ${{ needs.source.outputs.short_commit }}
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          package_name="AICraft-Luanti-${VERSION}-${SHORT_COMMIT}-linux-x86_64-rootfs"
+          package_root="$PWD/stage/$package_name"
+          mkdir -p "$package_root"
+          DESTDIR="$package_root" cmake --install build-release-server --strip
+          DESTDIR="$package_root" cmake --install build-release-agent --strip
+
+          notice_dir="$package_root$INSTALL_PREFIX/share/doc/aicraft-luanti"
+          mkdir -p "$notice_dir"
+          cp LICENSE.txt doc/lgpl-2.1.txt AICRAFT_CHANGES.md "$notice_dir/"
+          {
+            echo "Install by extracting this rootfs archive at /."
+            echo "Server: $INSTALL_PREFIX/bin/luantiserver"
+            echo "Agent:  $INSTALL_PREFIX/bin/aicraft-agent-client"
+          } > "$package_root/INSTALL.txt"
+          dpkg-query -W -f='${Package}=${Version}\n' | LC_ALL=C sort \
+            > "$package_root/BUILD_DEPENDENCIES.txt"
+          {
+            echo "server:"
+            bin/luantiserver --version
+            echo "agent:"
+            bin/aicraft-agent-client --version
+            echo "compiler:"
+            c++ --version | head -n 1
+            echo "cmake:"
+            cmake --version | head -n 1
+            echo "runtime libraries:"
+            ldd "$package_root$INSTALL_PREFIX/bin/luantiserver"
+            ldd "$package_root$INSTALL_PREFIX/bin/aicraft-agent-client"
+          } > "$package_root/BUILD_ENVIRONMENT.txt"
+          cat > build-arguments.txt <<EOF
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX
+          -DVERSION_EXTRA=aicraft.$SHORT_COMMIT
+          -DBUILD_CLIENT=OFF -DBUILD_SERVER=ON
+          -DBUILD_AGENT_CLIENT=ON
+          -DBUILD_UNITTESTS=OFF
+          -DBUILD_BENCHMARKS=OFF
+          -DBUILD_DOCUMENTATION=OFF
+          -DENABLE_LTO=OFF
+          -DENABLE_SOUND=OFF
+          -DRUN_IN_PLACE=OFF
+          EOF
+          dependency_sha="$(sha256sum "$package_root/BUILD_DEPENDENCIES.txt" | cut -d' ' -f1)"
+          python3 util/aicraft/release_package.py manifest \
+            --output "$package_root/AICRAFT_RELEASE.json" \
+            --version "${VERSION}-aicraft.${SHORT_COMMIT}" \
+            --target linux-x86_64 \
+            --repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --commit "$SOURCE_COMMIT" \
+            --upstream-commit "$UPSTREAM_LUANTI_COMMIT" \
+            --source-epoch "$SOURCE_EPOCH" \
+            --workflow "$GITHUB_WORKFLOW" \
+            --run-id "$GITHUB_RUN_ID" \
+            --runner ubuntu-22.04 \
+            --build-arguments build-arguments.txt \
+            --dependency "ubuntu-packages|BUILD_DEPENDENCIES.txt|$dependency_sha" \
+            --signing-status unsigned \
+            --no-notarized
+          mkdir -p artifact
+          python3 util/aicraft/release_package.py archive \
+            --root "$package_root" \
+            --output "artifact/$package_name.tar.gz" \
+            --checksum "artifact/$package_name.tar.gz.sha256" \
+            --format tar.gz \
+            --source-epoch "$SOURCE_EPOCH"
+          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Linux runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.stage.outputs.package_name }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+  macos:
+    name: macOS branded desktop (${{ matrix.arch }})
+    needs: source
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            dependency_sha: cc10684e22586a401b924a035e39423ce3891cebc9fb72c1e6012fd11a9c2980
+          - arch: x86_64
+            dependency_sha: 34606512310f980644196907da4d433b1320d5b71830ba53d4bd69225da06145
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned macOS dependency bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="macos11.3_${{ matrix.arch }}_deps.tar.gz"
+          url="https://github.com/luanti-org/luanti_macos_deps/releases/download/latest/$archive"
+          curl --fail --location --retry 5 --output "/tmp/$archive" "$url"
+          echo "${{ matrix.dependency_sha }}  /tmp/$archive" | shasum -a 256 --check
+          sudo tar -xzf "/tmp/$archive" -C /Users/Shared
+
+      - name: Build and test branded desktop
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
+          SHORT_COMMIT: ${{ needs.source.outputs.short_commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          mkdir build-release-macos
+          cd build-release-macos
+          export DEPS_DIR="/Users/Shared/macos11.3_${{ matrix.arch }}_deps"
+          export USE_XCODE=no
+          export osver=11.3
+          export xcodever=16.2
+          export arch="${{ matrix.arch }}"
+          export build_type=Release
+          ../util/ci/build_macos.sh \
+            -DBUILD_AICRAFT_CLIENT=ON \
+            -DBUILD_SERVER=OFF \
+            -DBUILD_UNITTESTS=ON \
+            -DBUILD_BENCHMARKS=OFF \
+            -DBUILD_DOCUMENTATION=OFF \
+            -DENABLE_SOUND=OFF \
+            -DENABLE_CURL=OFF \
+            -DENABLE_LTO=OFF \
+            -DVERSION_EXTRA="aicraft.${SHORT_COMMIT}"
+          ./macos/AICraft.app/Contents/MacOS/aicraft --run-unittests
+
+          cmake .. -DBUILD_UNITTESTS=OFF
+          cmake --build . --parallel 3
+          cmake --install .
+
+      - name: Validate optional signing configuration
+        id: signing
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          certificate_fields=0
+          for value in \
+            "$MACOS_CERTIFICATE_P12_BASE64" \
+            "$MACOS_CERTIFICATE_PASSWORD" \
+            "$MACOS_SIGNING_IDENTITY"; do
+            [[ -n "$value" ]] && certificate_fields=$((certificate_fields + 1))
+          done
+          notary_fields=0
+          for value in \
+            "$MACOS_NOTARY_KEY_P8_BASE64" \
+            "$MACOS_NOTARY_KEY_ID" \
+            "$MACOS_NOTARY_ISSUER_ID"; do
+            [[ -n "$value" ]] && notary_fields=$((notary_fields + 1))
+          done
+          if [[ "$certificate_fields" -ne 0 && "$certificate_fields" -ne 3 ]]; then
+            echo "Developer ID signing secrets are only partially configured." >&2
+            exit 1
+          fi
+          if [[ "$notary_fields" -ne 0 && "$notary_fields" -ne 3 ]]; then
+            echo "Apple notarization secrets are only partially configured." >&2
+            exit 1
+          fi
+          if [[ "$notary_fields" -eq 3 && "$certificate_fields" -ne 3 ]]; then
+            echo "Notarization requires a Developer ID signed application." >&2
+            exit 1
+          fi
+          if [[ "$certificate_fields" -eq 3 ]]; then
+            echo "status=developer-id" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=ad-hoc-only" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$notary_fields" -eq 3 ]]; then
+            echo "notarized=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarized=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Add notices and exact-source manifest
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
+          SOURCE_EPOCH: ${{ needs.source.outputs.epoch }}
+          SHORT_COMMIT: ${{ needs.source.outputs.short_commit }}
+          VERSION: ${{ needs.source.outputs.version }}
+          SIGNING_STATUS: ${{ steps.signing.outputs.status }}
+          NOTARIZED: ${{ steps.signing.outputs.notarized }}
+        run: |
+          set -euo pipefail
+          app="$PWD/build-release-macos/macos/AICraft.app"
+          notice_dir="$app/Contents/Resources/doc/aicraft-luanti"
+          mkdir -p "$notice_dir"
+          cp LICENSE.txt doc/lgpl-2.1.txt AICRAFT_CHANGES.md "$notice_dir/"
+          cat > build-arguments.txt <<EOF
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.3
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_AICRAFT_CLIENT=ON
+          -DBUILD_SERVER=OFF
+          -DBUILD_UNITTESTS=OFF
+          -DBUILD_BENCHMARKS=OFF
+          -DBUILD_DOCUMENTATION=OFF
+          -DENABLE_SOUND=OFF
+          -DENABLE_CURL=OFF
+          -DENABLE_LTO=OFF
+          -DVERSION_EXTRA=aicraft.$SHORT_COMMIT
+          EOF
+          dependency_url="https://github.com/luanti-org/luanti_macos_deps/releases/download/latest/macos11.3_${{ matrix.arch }}_deps.tar.gz"
+          notarized_argument="--no-notarized"
+          [[ "$NOTARIZED" == "true" ]] && notarized_argument="--notarized"
+          python3 util/aicraft/release_package.py manifest \
+            --output "$app/Contents/Resources/AICRAFT_RELEASE.json" \
+            --version "${VERSION}-aicraft.${SHORT_COMMIT}" \
+            --target "macos-${{ matrix.arch }}" \
+            --repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --commit "$SOURCE_COMMIT" \
+            --upstream-commit "$UPSTREAM_LUANTI_COMMIT" \
+            --source-epoch "$SOURCE_EPOCH" \
+            --workflow "$GITHUB_WORKFLOW" \
+            --run-id "$GITHUB_RUN_ID" \
+            --runner macos-15 \
+            --build-arguments build-arguments.txt \
+            --dependency "luanti-macos-deps|$dependency_url|${{ matrix.dependency_sha }}" \
+            --signing-status "$SIGNING_STATUS" \
+            "$notarized_argument"
+
+      - name: Sign and optionally notarize
+        shell: bash
+        env:
+          SIGNING_STATUS: ${{ steps.signing.outputs.status }}
+          NOTARIZED: ${{ steps.signing.outputs.notarized }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          app="$PWD/build-release-macos/macos/AICraft.app"
+          if [[ "$SIGNING_STATUS" == "developer-id" ]]; then
+            keychain="$RUNNER_TEMP/aicraft-signing.keychain-db"
+            certificate="$RUNNER_TEMP/aicraft-signing.p12"
+            keychain_password="$(openssl rand -hex 24)"
+            printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 -D > "$certificate"
+            security create-keychain -p "$keychain_password" "$keychain"
+            security set-keychain-settings -lut 21600 "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            security import "$certificate" -k "$keychain" \
+              -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            security list-keychains -d user -s "$keychain"
+            security set-key-partition-list -S apple-tool:,apple: \
+              -s -k "$keychain_password" "$keychain"
+            codesign --force --deep --options runtime --timestamp \
+              --entitlements misc/macos/entitlements/release.entitlements \
+              --sign "$MACOS_SIGNING_IDENTITY" "$app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            rm -f "$certificate"
+            security delete-keychain "$keychain"
+          else
+            codesign --force --deep --sign - "$app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+          fi
+
+          if [[ "$NOTARIZED" == "true" ]]; then
+            notary_key="$RUNNER_TEMP/aicraft-notary-key.p8"
+            submission="$RUNNER_TEMP/aicraft-notary.zip"
+            printf '%s' "$MACOS_NOTARY_KEY_P8_BASE64" | base64 -D > "$notary_key"
+            chmod 600 "$notary_key"
+            ditto -c -k --keepParent "$app" "$submission"
+            xcrun notarytool submit "$submission" --wait \
+              --key "$notary_key" \
+              --key-id "$MACOS_NOTARY_KEY_ID" \
+              --issuer "$MACOS_NOTARY_ISSUER_ID"
+            xcrun stapler staple "$app"
+            xcrun stapler validate "$app"
+            rm -f "$notary_key" "$submission"
+          fi
+
+      - name: Package branded desktop
+        id: package
+        shell: bash
+        env:
+          SOURCE_EPOCH: ${{ needs.source.outputs.epoch }}
+          SHORT_COMMIT: ${{ needs.source.outputs.short_commit }}
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          package_name="AICraft-Luanti-${VERSION}-${SHORT_COMMIT}-macos-${{ matrix.arch }}"
+          mkdir -p artifact
+          python3 util/aicraft/release_package.py archive \
+            --root "$PWD/build-release-macos/macos/AICraft.app" \
+            --output "artifact/$package_name.zip" \
+            --checksum "artifact/$package_name.zip.sha256" \
+            --format zip \
+            --source-epoch "$SOURCE_EPOCH"
+          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload branded desktop
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.package.outputs.package_name }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+  checksums:
+    name: Verify artifacts and publish checksum manifest
+    needs:
+      - source
+      - linux
+      - macos
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: downloaded
+
+      - name: Verify per-artifact checksums and build release manifest
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
+          SOURCE_EPOCH: ${{ needs.source.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' checksum; do
+            (
+              cd "$(dirname "$checksum")"
+              sha256sum --check "$(basename "$checksum")"
+            )
+          done < <(find downloaded -type f -name '*.sha256' -print0)
+
+          mkdir -p release
+          while IFS= read -r -d '' package; do
+            destination="release/$(basename "$package")"
+            [[ ! -e "$destination" ]]
+            cp "$package" "$destination"
+          done < <(find downloaded -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0)
+
+          python3 - "$SOURCE_COMMIT" "$UPSTREAM_LUANTI_COMMIT" "$SOURCE_EPOCH" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          commit, upstream, epoch = sys.argv[1:]
+          files = []
+          for path in sorted(Path("release").iterdir()):
+              with path.open("rb") as handle:
+                  digest = hashlib.file_digest(handle, "sha256").hexdigest()
+              files.append({
+                  "name": path.name,
+                  "sha256": digest,
+                  "size": path.stat().st_size,
+              })
+          payload = {
+              "schema_version": 1,
+              "product": "AICraft-Luanti",
+              "source_commit": commit,
+              "upstream_luanti_5_16_1_commit": upstream,
+              "source_date": datetime.fromtimestamp(
+                  int(epoch), timezone.utc
+              ).isoformat().replace("+00:00", "Z"),
+              "artifacts": files,
+          }
+          Path("release/BUILD_PROVENANCE.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          (
+            cd release
+            sha256sum -- * > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Upload verified release set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aicraft-luanti-release-${{ needs.source.outputs.short_commit }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Attach verified artifacts to tag
+    if: startsWith(github.ref, 'refs/tags/aicraft-v')
+    needs:
+      - source
+      - checksums
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release set
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: aicraft-luanti-release-${{ needs.source.outputs.short_commit }}
+          path: release
+
+      - name: Attach artifacts to an AICraft tag release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* \
+              --verify-tag \
+              --generate-notes \
+              --title "AICraft-Luanti $GITHUB_REF_NAME"
+          fi

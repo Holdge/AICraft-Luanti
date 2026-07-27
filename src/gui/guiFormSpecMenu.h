@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #pragma once
 
@@ -84,6 +85,8 @@ public:
 
 class GUIFormSpecMenu : public GUIModalMenu
 {
+	friend struct GameFormSpec;
+
 	struct ListRingSpec
 	{
 		ListRingSpec() = default;
@@ -182,6 +185,11 @@ public:
 	{
 		return m_current_inventory_location;
 	}
+
+#ifdef AICRAFT_AGENT_CLIENT
+	bool hasAgentInventoryLocation(const InventoryLocation &location) const;
+	bool getAgentContainerLocation(InventoryLocation *location) const;
+#endif
 
 	void setFormspecPrepend(const std::string &formspecPrepend)
 	{

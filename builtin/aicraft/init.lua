@@ -1,5 +1,6 @@
 -- AICraft
 -- SPDX-License-Identifier: LGPL-2.1-or-later
+-- Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 --
 -- Branded launcher. Public discovery, ContentDB, client mod management, and
 -- single-player administration are intentionally absent.
@@ -18,7 +19,7 @@ local modes = {
 	},
 	explore = {
 		title = "Free explore",
-		description = "Connect to the shared exploration world. Local play does not need a ticket: choose an account password on your first visit, then reuse it.",
+		description = "Connect to an AICraft Mineclonia exploration world with platform-issued credentials.",
 		button = "EXPLORE",
 	},
 	observe = {
@@ -28,8 +29,8 @@ local modes = {
 	},
 	create = {
 		title = "Create world",
-		description = "Create a local aicraft_game world. Publish and fork are handled by AICraft.",
-		button = "CREATE WORLD",
+		description = "Connect to your platform-issued Mineclonia World Create lease. Create, publish, and fork are managed by AICraft.",
+		button = "OPEN CREATION",
 	},
 }
 
@@ -72,16 +73,8 @@ local function render()
 		"button[12.25,8.25;2.05,0.55;quit;QUIT]",
 	})
 
-	if state.mode == "create" then
-		return common .. table.concat({
-			"label[1.1,5.05;World name]",
-			"field[1.1,5.4;8.8,0.75;world_name;;AICraft World]",
-			"button[10.2,5.4;4.1,0.75;connect;" .. selected.button .. "]",
-		})
-	end
-
-	local password_label = state.mode == "explore" and
-		"Password (choose on first visit)" or "Ticket / password"
+	local password_label = state.mode == "create" and
+		"World Create lease / ticket" or "AICraft ticket / password"
 
 	return common .. table.concat({
 		"label[1.1,5.05;Player name]",
@@ -120,36 +113,6 @@ core.button_handler = function(fields)
 		return false
 	end
 
-	if state.mode == "create" then
-		local name = (fields.world_name or ""):match("^%s*(.-)%s*$")
-		if name == "" then
-			state.error = "Enter a world name."
-			core.update_formspec(render())
-			return true
-		end
-		local message = core.create_world(name, "aicraft_game", {
-			creative_mode = "true",
-			enable_damage = "false",
-			aicraft_mode = "creation",
-		})
-		if message then
-			state.error = message
-			core.update_formspec(render())
-			return true
-		end
-		for index, world in ipairs(core.get_worlds()) do
-			if world.name == name then
-				gamedata.selected_world = index
-				gamedata.singleplayer = true
-				core.start()
-				return true
-			end
-		end
-		state.error = "World was created but could not be selected."
-		core.update_formspec(render())
-		return true
-	end
-
 	local address = (fields.address or ""):match("^%s*(.-)%s*$")
 	local player_name = (fields.player_name or ""):match("^%s*(.-)%s*$")
 	local port = tonumber(fields.port)
@@ -167,7 +130,9 @@ core.button_handler = function(fields)
 	gamedata.password = fields.password or ""
 	gamedata.address = address
 	gamedata.port = port
-	gamedata.allow_login_or_register = "any"
+	-- AICraft credentials are provisioned by the platform. The branded client
+	-- must never turn a mistyped ticket into an arbitrary new Luanti account.
+	gamedata.allow_login_or_register = "login"
 	gamedata.selected_world = 0
 	core.start()
 	return true

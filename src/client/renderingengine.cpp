@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
 // Copyright (C) 2017 nerzhul, Loic Blot <loic.blot@unix-experience.fr>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #include <optional>
 #include <irrlicht.h>

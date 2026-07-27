@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 
 #include <cstdlib>
@@ -3811,6 +3812,89 @@ void GUIFormSpecMenu::autoScroll()
 		break;
 	}
 }
+
+#ifdef AICRAFT_AGENT_CLIENT
+namespace {
+
+std::vector<InventoryLocation> agentFormspecInventoryLocations(
+		const std::string &formspec,
+		const InventoryLocation &current_location)
+{
+	std::vector<InventoryLocation> locations;
+	for (const std::string &element : split(formspec, ']')) {
+		const size_t opening = element.find('[');
+		if (opening == std::string::npos ||
+				trim(element.substr(0, opening)) != "list")
+			continue;
+		const std::vector<std::string> parts =
+				split(element.substr(opening + 1), ';');
+		if (parts.size() < 2)
+			continue;
+
+		InventoryLocation location;
+		const std::string encoded(trim(parts[0]));
+		if (encoded == "context" || encoded == "current_name") {
+			location = current_location;
+		} else {
+			try {
+				location.deSerialize(encoded);
+			} catch (const std::exception &) {
+				continue;
+			}
+		}
+		locations.push_back(std::move(location));
+	}
+	return locations;
+}
+
+} // namespace
+
+bool GUIFormSpecMenu::hasAgentInventoryLocation(
+		const InventoryLocation &location) const
+{
+	for (const GUIInventoryList *list : m_inventorylists) {
+		if (list && list->getInventoryloc() == location)
+			return true;
+	}
+	// The Agent client's null video driver reports a 0x0 screen. GUI
+	// regeneration intentionally skips that size, so inventory widgets do not
+	// exist even though the currently open server formspec explicitly declares
+	// them. Parse only list[] locations from that current formspec; action
+	// resolution still requires the inventory to exist in the client manager.
+	for (const InventoryLocation &declared : agentFormspecInventoryLocations(
+			m_formspec_string, m_current_inventory_location)) {
+		if (declared == location)
+			return true;
+	}
+	return false;
+}
+
+bool GUIFormSpecMenu::getAgentContainerLocation(
+		InventoryLocation *location) const
+{
+	for (const GUIInventoryList *list : m_inventorylists) {
+		if (!list)
+			continue;
+		const InventoryLocation &candidate = list->getInventoryloc();
+		if (candidate.type != InventoryLocation::NODEMETA &&
+				candidate.type != InventoryLocation::DETACHED)
+			continue;
+		*location = candidate;
+		return true;
+	}
+	for (const InventoryLocation &candidate : agentFormspecInventoryLocations(
+			m_formspec_string, m_current_inventory_location)) {
+		if (candidate.type != InventoryLocation::NODEMETA &&
+				candidate.type != InventoryLocation::DETACHED)
+			continue;
+		if (!m_invmgr || !m_invmgr->getInventory(candidate))
+			continue;
+		*location = candidate;
+		return true;
+	}
+	return false;
+}
+#endif
 
 void GUIFormSpecMenu::updateSelectedItem()
 {

@@ -1,11 +1,13 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2024 cx384
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #pragma once
 
 #include <memory>
 #include <string>
+#include <vector>
 #include "irr_v3d.h"
 #include "scripting_pause_menu.h"
 
@@ -13,6 +15,17 @@ class Client;
 class RenderingEngine;
 class InputHandler;
 class GUIFormSpecMenu;
+struct InventoryLocation;
+
+#ifdef AICRAFT_AGENT_CLIENT
+struct AgentFormspecField
+{
+	std::string name;
+	std::string type;
+	std::string label;
+	std::string value;
+};
+#endif
 
 /*
 This object intend to contain the core fromspec functionality.
@@ -45,6 +58,14 @@ struct GameFormSpec
 
 	bool handleCallbacks();
 	void reset();
+
+#ifdef AICRAFT_AGENT_CLIENT
+	bool getAgentFormspec(std::string *form_name, InventoryLocation *location,
+			std::vector<AgentFormspecField> *fields) const;
+	bool agentFormspecContainsInventory(const InventoryLocation &location) const;
+	bool getAgentContainerLocation(InventoryLocation *location) const;
+	void closeAgentFormspec();
+#endif
 
 #ifdef __ANDROID__
 	// Returns false if no formspec open

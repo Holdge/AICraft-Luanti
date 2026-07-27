@@ -1,9 +1,11 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #include "game_formspec.h"
 
+#include <algorithm>
 #include "gettext.h"
 #include "nodemetadata.h"
 #include "renderingengine.h"
@@ -219,6 +221,75 @@ void GameFormSpec::reset()
 	deleteFormspec();
 }
 
+#ifdef AICRAFT_AGENT_CLIENT
+bool GameFormSpec::getAgentFormspec(std::string *form_name,
+		InventoryLocation *location, std::vector<AgentFormspecField> *fields) const
+{
+	if (!m_formspec)
+		return false;
+
+	*location = m_formspec->getFormspecLocation();
+	*form_name = m_formspec->m_text_dst ? m_formspec->m_text_dst->m_formname : "";
+	if (form_name->empty()) {
+		if (location->type == InventoryLocation::NODEMETA)
+			*form_name = location->dump();
+		else
+			*form_name = "player_inventory";
+	}
+
+	auto fieldTypeName = [](FormspecFieldType type) {
+		switch (type) {
+		case f_Button: return "button";
+		case f_Table: return "table";
+		case f_TabHeader: return "tabheader";
+		case f_CheckBox: return "checkbox";
+		case f_DropDown: return "dropdown";
+		case f_ScrollBar: return "scrollbar";
+		case f_Box: return "box";
+		case f_ItemImage: return "item_image";
+		case f_HyperText: return "hypertext";
+		case f_AnimatedImage: return "animated_image";
+		case f_Unknown: return "field";
+		}
+		return "field";
+	};
+
+	fields->clear();
+	fields->reserve(std::min<size_t>(m_formspec->m_fields.size(), 256));
+	for (const auto &field : m_formspec->m_fields) {
+		if (field.fname.empty())
+			continue;
+		fields->push_back({
+			field.fname,
+			fieldTypeName(field.ftype),
+			wide_to_utf8(field.flabel),
+			wide_to_utf8(field.fdefault),
+		});
+		if (fields->size() == 256)
+			break;
+	}
+	return true;
+}
+
+bool GameFormSpec::agentFormspecContainsInventory(
+		const InventoryLocation &location) const
+{
+	return m_formspec && m_formspec->hasAgentInventoryLocation(location);
+}
+
+bool GameFormSpec::getAgentContainerLocation(InventoryLocation *location) const
+{
+	return m_formspec && m_formspec->getAgentContainerLocation(location);
+}
+
+void GameFormSpec::closeAgentFormspec()
+{
+	if (m_formspec)
+		m_formspec->quitMenu();
+	deleteFormspec();
+}
+#endif
+
 bool GameFormSpec::handleEmptyFormspec(const std::string &formspec, const std::string &formname)
 {
 	if (formspec.empty()) {
@@ -247,6 +318,13 @@ void GameFormSpec::showFormSpec(const std::string &formspec, const std::string &
 		&m_input->joystick, fs_src, txt_dst, m_client->getFormspecPrepend(),
 		m_client->getSoundManager());
 	m_formspec->setName(formname);
+#ifdef AICRAFT_AGENT_CLIENT
+	// A null video driver does not draw the menu, so drawMenu() cannot copy the
+	// form source into m_formspec_string. Preserve the exact open server
+	// formspec for the Agent-only list[] parser without inventing a GUI size.
+	InventoryLocation undefined_location;
+	m_formspec->setFormSpec(formspec, undefined_location);
+#endif
 }
 
 void GameFormSpec::showCSMFormSpec(const std::string &formspec, const std::string &formname)

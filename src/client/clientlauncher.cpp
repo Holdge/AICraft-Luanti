@@ -1,6 +1,7 @@
 // Luanti
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+// Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 
 #include "gui/mainmenumanager.h"
 #include "clouds.h"
@@ -20,12 +21,14 @@
 #include "clientlauncher.h"
 #include "version.h"
 #include "renderingengine.h"
+#include "securecredential.h"
 #include "settings.h"
 #include "gettime.h"
 #include "util/numeric.h"
 #include "util/tracy_wrapper.h"
 #include <IGUISpriteBank.h>
 #include <ICameraSceneNode.h>
+#include <algorithm>
 #include <unordered_map>
 
 #if USE_SOUND
@@ -98,7 +101,12 @@ ClientLauncher::~ClientLauncher()
 
 bool ClientLauncher::run(GameStartData &start_data, const Settings &cmd_args)
 {
-	init_args(start_data, cmd_args);
+	try {
+		init_args(start_data, cmd_args);
+	} catch (const BaseException &e) {
+		errorstream << e.what() << std::endl;
+		return false;
+	}
 
 	try {
 		init_engine();
@@ -294,12 +302,35 @@ void ClientLauncher::init_args(GameStartData &start_data, const Settings &cmd_ar
 #endif
 #ifdef AICRAFT_AGENT_CLIENT
 	skip_main_menu = true;
-	if (!cmd_args.exists("address") || !cmd_args.exists("name") ||
-			!cmd_args.exists("agent-control-socket") || !cmd_args.exists("agent-session")) {
-		throw BaseException("AICraft Agent client requires --address, --name, --agent-control-socket, and --agent-session");
+	if (!cmd_args.exists("address") || !cmd_args.exists("port") ||
+			!cmd_args.exists("name") ||
+			!cmd_args.exists("password-file") ||
+			!cmd_args.exists("agent-control-socket") || !cmd_args.exists("agent-session") ||
+			!cmd_args.exists("agent-session-secret-file")) {
+		throw BaseException("AICraft Agent client requires --address, --port, --name, "
+				"--password-file, "
+				"--agent-control-socket, --agent-session, and "
+				"--agent-session-secret-file");
+	}
+	if (cmd_args.exists("password"))
+		throw BaseException("AICraft Agent client rejects plaintext --password; "
+				"use --password-file");
+	if (cmd_args.get("address").empty() || cmd_args.getU16("port") == 0 ||
+			cmd_args.get("name").empty() || cmd_args.get("password-file").empty() ||
+			cmd_args.get("agent-control-socket").empty() ||
+			cmd_args.get("agent-session").empty() ||
+			cmd_args.get("agent-session-secret-file").empty()) {
+		throw BaseException("AICraft Agent client requires non-empty endpoint, "
+				"identity, credential, and control arguments");
 	}
 	agent_control_socket = cmd_args.get("agent-control-socket");
 	agent_session = cmd_args.get("agent-session");
+	agent_session_secret = readSecureCredentialFile(
+			cmd_args.get("agent-session-secret-file"), "Agent session secret");
+	if (agent_session_secret.size() < 32)
+		throw BaseException("AICraft Agent session secret must contain at least 32 characters");
+	if (agent_session_secret.size() > 256)
+		throw BaseException("AICraft Agent session secret must not exceed 256 characters");
 	g_settings->setBool("enable_joysticks", false);
 	g_settings->setBool("enable_touch", false);
 #endif
@@ -342,7 +373,10 @@ void ClientLauncher::init_engine()
 void ClientLauncher::init_input()
 {
 #ifdef AICRAFT_AGENT_CLIENT
-	input = new AgentInputHandler(agent_control_socket, agent_session);
+	input = new AgentInputHandler(
+			agent_control_socket, agent_session, agent_session_secret);
+	std::fill(agent_session_secret.begin(), agent_session_secret.end(), '\0');
+	agent_session_secret.clear();
 #else
 	if (random_input)
 		input = new RandomInputHandler();
@@ -458,13 +492,11 @@ bool ClientLauncher::launch_game(std::string &error_message,
 		start_data.password = cmd_args.get("password");
 
 	if (cmd_args.exists("password-file")) {
-		std::ifstream passfile(cmd_args.get("password-file"));
-		if (passfile.good()) {
-			std::getline(passfile, start_data.password);
-		} else {
-			error_message = gettext("Provided password file "
-					"failed to open: ")
-					+ cmd_args.get("password-file");
+		try {
+			start_data.password = readSecureCredentialFile(
+					cmd_args.get("password-file"), "password");
+		} catch (const BaseException &e) {
+			error_message = e.what();
 			errorstream << error_message << std::endl;
 			return false;
 		}

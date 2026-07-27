@@ -1,4 +1,4 @@
-
+# Modified for AICraft on 2026-07-27; see AICRAFT_CHANGES.md.
 # This is only one working solution I found to be working for normal and Archive builds under Xcode 15.4
 # I expect higger sensitivity to Xcode version.
 
