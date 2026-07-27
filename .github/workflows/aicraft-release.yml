@@ -283,6 +283,7 @@ jobs:
             -DBUILD_DOCUMENTATION=OFF \
             -DENABLE_SOUND=OFF \
             -DENABLE_CURL=OFF \
+            -DENABLE_OPENSSL=OFF \
             -DENABLE_LTO=OFF \
             -DVERSION_EXTRA="aicraft.${SHORT_COMMIT}"
           ./macos/AICraft.app/Contents/MacOS/aicraft --run-unittests
@@ -366,6 +367,7 @@ jobs:
           -DBUILD_DOCUMENTATION=OFF
           -DENABLE_SOUND=OFF
           -DENABLE_CURL=OFF
+          -DENABLE_OPENSSL=OFF
           -DENABLE_LTO=OFF
           -DVERSION_EXTRA=aicraft.$SHORT_COMMIT
           EOF
