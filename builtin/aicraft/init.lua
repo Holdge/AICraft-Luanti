@@ -18,7 +18,7 @@ local modes = {
 	},
 	explore = {
 		title = "Free explore",
-		description = "Connect to the shared exploration world.",
+		description = "Connect to the shared exploration world. Local play does not need a ticket: choose an account password on your first visit, then reuse it.",
 		button = "EXPLORE",
 	},
 	observe = {
@@ -80,9 +80,12 @@ local function render()
 		})
 	end
 
+	local password_label = state.mode == "explore" and
+		"Password (choose on first visit)" or "Ticket / password"
+
 	return common .. table.concat({
 		"label[1.1,5.05;Player name]",
-		"label[6.0,5.05;Ticket / password]",
+		"label[6.0,5.05;" .. password_label .. "]",
 		"field[1.1,5.4;4.55,0.75;player_name;;" .. escape(setting("name", "Player")) .. "]",
 		"pwdfield[6.0,5.4;4.55,0.75;password;]",
 		"label[1.1,6.35;Server]",
