@@ -19,7 +19,9 @@ The target:
 - replaces physical keyboard/mouse input with bounded newline-delimited JSON
   actions received from the Unix socket;
 - automatically releases movement and interaction controls at each action
-  deadline.
+  deadline;
+- omits the render-target pipeline and frame drawing while retaining the
+  network, client simulation, collision, and PlayerControl loops.
 
 Currently implemented control messages are `move`, `look`, `dig`, `attack`,
 `place`, `use`, and `wait`. Inventory/craft/chat operations and complete action

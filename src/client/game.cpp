@@ -3562,8 +3562,10 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	/*
 		==================== Drawing begins ====================
 	*/
+#ifndef AICRAFT_AGENT_CLIENT
 	if (device->isWindowVisible())
 		drawScene(graph, stats);
+#endif
 	/*
 		==================== End scene ====================
 	*/
@@ -3734,8 +3736,12 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 
 void Game::showOverlayMessage(const char *msg, float dtime, int percent, float *indef_pos)
 {
+#ifdef AICRAFT_AGENT_CLIENT
+	return;
+#else
 	m_rendering_engine->draw_load_screen(wstrgettext(msg), guienv, texture_src,
 			dtime, percent, indef_pos);
+#endif
 }
 
 void Game::settingChangedCallback(const std::string &setting_name, void *data)

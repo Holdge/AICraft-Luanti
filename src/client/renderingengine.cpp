@@ -402,6 +402,13 @@ std::vector<video::E_DRIVER_TYPE> RenderingEngine::getSupportedVideoDrivers()
 
 void RenderingEngine::initialize(Client *client, Hud *hud)
 {
+#ifdef AICRAFT_AGENT_CLIENT
+	// The agent client intentionally uses Irrlicht's null video driver.  The
+	// normal rendering core allocates render-target textures, which that driver
+	// cannot provide.  Networking, client simulation, and PlayerControl do not
+	// require a rendering core.
+	return;
+#endif
 	const std::string &draw_mode = g_settings->get("3d_mode");
 	core.reset(createRenderingCore(draw_mode, m_device, client, hud));
 }
@@ -414,6 +421,8 @@ void RenderingEngine::finalize()
 void RenderingEngine::draw_scene(video::SColor skycolor, bool show_hud,
 		bool draw_wield_tool, bool draw_crosshair)
 {
+	if (!core)
+		return;
 	core->draw(skycolor, show_hud, draw_wield_tool, draw_crosshair);
 }
 
