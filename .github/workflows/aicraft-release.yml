@@ -88,6 +88,10 @@ jobs:
 
       - name: Install build dependencies
         shell: bash
+        env:
+          # Upstream's helper optionally provisions PostgreSQL when this is
+          # non-empty; define it explicitly because this workflow uses `set -u`.
+          MINETEST_POSTGRESQL_CONNECT_STRING: ""
         run: |
           set -euo pipefail
           source ./util/ci/common.sh
